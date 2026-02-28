@@ -1,0 +1,32 @@
+[project]
+name = "patchcore-realization"
+version = "0.1.0"
+description = "PatchCore custom implementation"
+authors = [
+    {name = "Renat",email = "ronaldo@gmail.com"}
+]
+license = {text = "MIT"}
+requires-python = ">=3.13"
+dependencies = [
+    "pillow (>=12.1.1,<13.0.0)",
+    "numpy (>=2.4.2,<3.0.0)",
+    "scipy (>=1.17.1,<2.0.0)",
+    "scikit-learn (>=1.8.0,<2.0.0)"
+]
+
+[tool.poetry]
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.13"
+torch = {version = "*", source = "pytorch-cu126"}
+torchvision = {version = "*", source = "pytorch-cu126"}
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[[tool.poetry.source]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+priority = "explicit"
