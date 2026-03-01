@@ -343,9 +343,9 @@ class FeatureExtractor(nn.Module):
         feat_2d = feat.permute(0, 2, 3, 1).reshape(B, H * W, C)
         # AdaptiveAvgPool1d ожидает (B, C_in, L) → применяем как (B, L, C)
         # поэтому транспонируем: (B, C, H*W) → pool → (B, target_dim, H*W)
-        feat_2d = feat_2d.permute(0, 2, 1)              # (B, C, H*W)
-        feat_adapted = self._channel_adapter(feat_2d)   # (B, target_dim, H*W)
-        feat_adapted = feat_adapted.permute(0, 2, 1)    # (B, H*W, target_dim)
+        feat_2d = feat_2d.permute(0, 2, 1).contiguous()              # (B, C, H*W)
+        feat_adapted = self._channel_adapter(feat_2d)                 # (B, target_dim, H*W)
+        feat_adapted = feat_adapted.permute(0, 2, 1).contiguous()     # (B, H*W, target_dim)
         feat_adapted = feat_adapted.reshape(B, H, W, self.target_dim)
         feat_adapted = feat_adapted.permute(0, 3, 1, 2).contiguous()  # (B, target_dim, H, W)
         return feat_adapted
