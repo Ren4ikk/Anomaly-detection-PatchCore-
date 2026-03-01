@@ -323,29 +323,50 @@ class FeatureExtractor(nn.Module):
 
     def _adapt_channels(self, feat: torch.Tensor) -> torch.Tensor:
         """
-        Адаптирует число каналов к target_dim через AdaptiveAvgPool1d.
+        Сжимает число каналов с 1536 до target_dim=1024 через AdaptiveAvgPool1d.
 
-        В оригинале — класс Aggregator (common.py):
-          adaptive_avg_pool1d(input.reshape(B, -1, C), target_dim)
+        Зачем нужен этот шаг:
+            После конкатенации признаков layer2 (512 каналов) и layer3
+            (1024 канала) получается тензор с 1536 каналами. Авторы используют
+            --target_embed_dimension 1024, поэтому нужно привести 1536 → 1024.
+            AdaptiveAvgPool1d делает это усреднением групп соседних каналов —
+            без обучаемых параметров, быстро.
 
-        Шаг нужен потому что 512 + 1024 = 1536 ≠ 1024 (target_dim).
-        AdaptiveAvgPool1d «сжимает» ось каналов усреднением групп соседних
-        каналов — быстро и без обучаемых параметров.
+        Соответствие оригиналу:
+            В репозитории авторов это класс Aggregator (common.py):
+              adaptive_avg_pool1d(input.reshape(B, -1, C), target_dim)
+            где reshape объединяет B и H*W в одну ось.
+
+        Трансформации формы по шагам (пример: B=32, H=W=28):
+            Вход:                    (32, 1536, 28, 28)
+            permute(0,2,3,1):        (32,  28,  28, 1536)   каналы в конец
+            reshape(B*H*W, 1, C):    (25088, 1, 1536)       каждый патч отдельно
+            AdaptiveAvgPool1d(1024): (25088, 1, 1024)        пул по оси каналов
+            reshape(B, H, W, 1024):  (32,  28,  28, 1024)   восстанавливаем батч
+            permute(0,3,1,2):        (32, 1024, 28, 28)      каналы обратно вперёд
+
+        Ключевой момент — почему (B*H*W, 1, C), а не (B, H*W, C):
+            AdaptiveAvgPool1d пулит по оси L (последней). Если подать (B, H*W, C),
+            то пул применится по оси C длиной 1536 — верно, но тогда все патчи
+            одного изображения смешиваются в один батч, что некорректно.
+            Подавая каждый патч как (1, C), мы явно говорим: пулить нужно
+            именно эти 1536 чисел, и каждый патч обрабатывается независимо.
 
         Args:
-            feat: (B, C, H, W)
+            feat: Тензор формы (B, C, H, W), где C=1536 после конкатенации.
 
         Returns:
-            (B, target_dim, H, W)
+            Тензор формы (B, target_dim, H, W), где target_dim=1024.
+            Пространственное разрешение H x W сохраняется.
         """
         B, C, H, W = feat.shape
-        # Переставляем каналы в конец: (B, H*W, C)
-        feat_2d = feat.permute(0, 2, 3, 1).reshape(B, H * W, C)
-        # AdaptiveAvgPool1d ожидает (B, C_in, L) → применяем как (B, L, C)
-        # поэтому транспонируем: (B, C, H*W) → pool → (B, target_dim, H*W)
-        feat_2d = feat_2d.permute(0, 2, 1).contiguous()              # (B, C, H*W)
-        feat_adapted = self._channel_adapter(feat_2d)                 # (B, target_dim, H*W)
-        feat_adapted = feat_adapted.permute(0, 2, 1).contiguous()     # (B, H*W, target_dim)
+
+        # Разворачиваем пространство в одну ось: (B*H*W, 1, C)
+        # AdaptiveAvgPool1d пулит по последней оси C: 1536 → 1024
+        feat_2d = feat.permute(0, 2, 3, 1).contiguous().reshape(B * H * W, 1, C)
+        # (B*H*W, 1, C) → (B*H*W, 1, target_dim)
+        feat_adapted = self._channel_adapter(feat_2d)
+        # Восстанавливаем пространственные оси
         feat_adapted = feat_adapted.reshape(B, H, W, self.target_dim)
         feat_adapted = feat_adapted.permute(0, 3, 1, 2).contiguous()  # (B, target_dim, H, W)
         return feat_adapted

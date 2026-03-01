@@ -97,6 +97,7 @@ def _load_test_data(
                 ))
                 if candidates:
                     mask_img = Image.open(candidates[0]).convert("L")
+                    mask_img = mask_img.resize((224, 224), Image.NEAREST)
                     mask_arr = (np.array(mask_img) > 0).astype(np.uint8)
                     masks.append(mask_arr)
                 else:

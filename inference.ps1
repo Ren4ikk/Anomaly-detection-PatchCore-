@@ -1,4 +1,6 @@
-poetry run python run.py `
-  --load_path ./models/bottle.pt `
-  --test_dir  ./data/bottle/test `
-  --mask_dir  ./data/bottle/ground_truth
+$ModelPath  = "./models/capsule.pt"
+$ImagePath  = "./mvtec_Defect_detection_dataset/capsule/test/faulty_imprint/014.png"
+$OutputDir  = "./results"
+$Threshold  = "0.62"
+
+poetry run python infer.py --model $ModelPath --image $ImagePath --output_dir $OutputDir --threshold $Threshold
