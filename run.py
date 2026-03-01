@@ -1,0 +1,460 @@
+"""
+Этап 4 — Поиск и Инференс: Главный координатор PatchCore.
+
+Класс PatchCore объединяет все этапы:
+  fit()     — извлечение признаков → coreset → индекс
+  predict() — поиск NN → re-weighting → segmentation mask
+
+Математика из статьи (Section 3.3):
+
+  Скор патча (формула 6):
+    s*(m_test) = min_{m ∈ M_C} ‖m_test − m‖₂
+
+  Image-level скор с re-weighting (формула 7):
+    s = (1 − exp(s*) / Σ_{m ∈ Nb(m*)} exp(‖m_test* − m‖₂)) · s*
+
+  Segmentation mask:
+    1. Патч-скоры → 2D-карта (H_feat × W_feat)
+    2. Билинейный апскейл → 224×224
+    3. Гауссово сглаживание σ=4
+
+Ссылки:
+  Статья:             https://arxiv.org/pdf/2106.08265  (Section 3.3)
+  Реализация авторов: https://github.com/amazon-science/patchcore-inspection
+                      src/patchcore/patchcore.py
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from scipy.ndimage import gaussian_filter
+from torch.utils.data import DataLoader
+
+from coreset_sampler import CoresetSampler
+from dataset import PatchCoreDataset, build_train_transform
+from feature_extractor import FeatureExtractor
+from nearest_neighbor_index import NearestNeighborIndex
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Константы
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Число соседей b для re-weighting (формула 7 статьи).
+# Авторы используют b=9 по умолчанию.
+_REWEIGHTING_NEIGHBOURS: int = 9
+
+# σ для финального гауссова сглаживания карты аномальности.
+# Авторы фиксируют σ=4 (Section 3.3: «smoothed with a Gaussian of kernel width σ=4»).
+_GAUSSIAN_SIGMA: float = 4.0
+
+# Размер выходной карты аномальности (соответствует входному изображению).
+_OUTPUT_SIZE: int = 224
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Датакласс результатов инференса
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class PredictionResult:
+    """
+    Результат predict() для одного изображения.
+
+    Атрибуты:
+        image_score:    Скор аномальности изображения (scalar).
+                        Больше → более аномально.
+        anomaly_map:    Тепловая карта аномальности (H, W) = (224, 224).
+                        Значения нормированы в [0, 1].
+        patch_scores:   Сырые патч-скоры до нормировки (H_feat * W_feat,).
+                        Полезны для отладки.
+        spatial_size:   Размер карты признаков (H_feat, W_feat).
+    """
+    image_score: float
+    anomaly_map: np.ndarray        # (224, 224) float32, значения в [0, 1]
+    patch_scores: np.ndarray       # (H_feat * W_feat,) float32
+    spatial_size: tuple[int, int]  # (H_feat, W_feat)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Главный класс
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PatchCore:
+    """
+    Главный координатор метода PatchCore.
+
+    Объединяет все четыре этапа в единый API:
+      • Этап 1: PatchCoreDataset / DataLoader
+      • Этап 2: FeatureExtractor
+      • Этап 3: CoresetSampler
+      • Этап 4: NearestNeighborIndex + predict
+
+    Пример использования::
+
+        model = PatchCore(device="cuda", coreset_ratio=0.1)
+        model.fit(train_image_dir="./data/train/good")
+
+        result = model.predict_single(test_image_tensor)
+        print(f"Image score: {result.image_score:.4f}")
+
+    Args:
+        device:           Устройство для backbone ('cpu' или 'cuda').
+        coreset_ratio:    Доля сохраняемых патчей (0.1 = PatchCore-10%).
+        batch_size:       Размер батча при извлечении признаков.
+        num_workers:      Число процессов DataLoader.
+        use_gpu_faiss:    Использовать GPU для FAISS-поиска.
+        n_reweight_nn:    Число соседей b для re-weighting (формула 7).
+        gaussian_sigma:   σ для гауссова сглаживания карты аномальности.
+    """
+
+    def __init__(
+        self,
+        device: str | torch.device = "cpu",
+        coreset_ratio: float = 0.10,
+        batch_size: int = 32,
+        num_workers: int = 4,
+        use_gpu_faiss: bool = False,
+        n_reweight_nn: int = _REWEIGHTING_NEIGHBOURS,
+        gaussian_sigma: float = _GAUSSIAN_SIGMA,
+    ) -> None:
+        self.device = torch.device(device)
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.n_reweight_nn = n_reweight_nn
+        self.gaussian_sigma = gaussian_sigma
+
+        # Компоненты пайплайна
+        self.feature_extractor = FeatureExtractor(device=device)
+        self.coreset_sampler = CoresetSampler(ratio=coreset_ratio, use_gpu=use_gpu_faiss)
+        self.nn_index = NearestNeighborIndex(use_gpu=use_gpu_faiss)
+
+        # Пространственный размер карты признаков — заполняется при fit()
+        self._spatial_size: Optional[tuple[int, int]] = None
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # fit()
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def fit(self, train_image_dir: str) -> None:
+        """
+        Обучение PatchCore: строит банк памяти M_C из нормальных изображений.
+
+        Pipeline:
+          1. Загружаем все train-изображения через PatchCoreDataset
+          2. Извлекаем патч-признаки через FeatureExtractor батч за батчем
+          3. Накапливаем все признаки в единую матрицу M
+          4. Сжимаем M → M_C через CoresetSampler
+          5. Строим FAISS-индекс из M_C через NearestNeighborIndex
+
+        Args:
+            train_image_dir: Путь к директории с нормальными train-изображениями.
+        """
+        print(f"[PatchCore] fit() — загрузка изображений из: {train_image_dir}")
+
+        # Этап 1: датасет и загрузчик
+        dataset = PatchCoreDataset(root=train_image_dir)
+        loader = DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=(self.device.type == "cuda"),
+            drop_last=False,
+        )
+
+        # Этап 2: извлечение признаков — накапливаем по батчам
+        all_features: list[torch.Tensor] = []
+
+        print(f"[PatchCore] Извлечение признаков ({len(dataset)} изображений)...")
+        for batch_idx, images in enumerate(loader):
+            images = images.to(self.device)
+
+            # extract_with_spatial_info возвращает признаки и размер карты
+            patch_features, spatial_size = (
+                self.feature_extractor.extract_with_spatial_info(images)
+            )
+            all_features.append(patch_features.cpu())
+
+            # Сохраняем spatial_size один раз (одинаков для всех батчей)
+            if self._spatial_size is None:
+                self._spatial_size = spatial_size
+
+            if (batch_idx + 1) % 10 == 0:
+                print(f"  Обработано батчей: {batch_idx + 1}/{len(loader)}")
+
+        # Объединяем все патч-признаки в единую матрицу M
+        memory_bank = torch.cat(all_features, dim=0)
+        print(f"[PatchCore] Банк памяти M: {memory_bank.shape}")
+
+        # Этап 3: сжатие через coreset
+        print(f"[PatchCore] Coreset subsampling (ratio={self.coreset_sampler.ratio})...")
+        coreset = self.coreset_sampler.sample(memory_bank)
+        print(f"[PatchCore] Косет M_C: {coreset.shape}")
+
+        # Этап 4: строим FAISS-индекс
+        print("[PatchCore] Построение FAISS-индекса...")
+        self.nn_index.fit(coreset)
+        print("[PatchCore] fit() завершён.")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # predict()
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def predict(self, images: torch.Tensor) -> list[PredictionResult]:
+        """
+        Вычисляет скоры аномальности и карты сегментации для батча изображений.
+
+        Pipeline predict() (Section 3.3 статьи):
+          1. Извлекаем патч-признаки тестового изображения P(x_test)
+          2. Для каждого патча находим ближайшего соседа в M_C (1-NN)
+             → получаем патч-скоры s*(m_test) = ‖m_test − m*‖₂
+          3. Находим наиболее аномальный патч:
+             m_test* = argmax s*(m_test)
+             s* = max s*(m_test)
+          4. Re-weighting (формула 7): корректируем s* на основе плотности
+             b соседей патча m* внутри M_C
+          5. Строим карту аномальности: патч-скоры → 2D → апскейл → гаусс
+
+        Args:
+            images: Батч изображений (B, 3, 224, 224), предобработанных
+                    через build_train_transform().
+
+        Returns:
+            Список PredictionResult, по одному на каждое изображение в батче.
+
+        Raises:
+            RuntimeError: Если fit() не был вызван.
+        """
+        if not self.nn_index.is_fitted:
+            raise RuntimeError("Сначала вызовите fit().")
+        if self._spatial_size is None:
+            raise RuntimeError("spatial_size не установлен. Вызовите fit() сначала.")
+
+        images = images.to(self.device)
+        B = images.shape[0]
+        H_feat, W_feat = self._spatial_size
+        n_patches = H_feat * W_feat  # патчей на изображение (обычно 784)
+
+        # Шаг 1: извлекаем патч-признаки
+        # patch_features: (B * n_patches, D)
+        patch_features = self.feature_extractor.extract(images)
+
+        # Шаг 2: поиск 1-NN для каждого патча → патч-скоры s*(m_test)
+        # Запрашиваем (n_reweight_nn + 1) соседей сразу, чтобы не делать
+        # два отдельных FAISS-запроса (оптимизация)
+        k_search = self.n_reweight_nn + 1
+        distances, nn_indices = self.nn_index.search(patch_features, k=k_search)
+        # distances: (B * n_patches, k_search) — L2-расстояния
+        # nn_indices: (B * n_patches, k_search) — индексы соседей в M_C
+
+        # Патч-скоры: расстояние до ближайшего соседа (1-NN)
+        patch_scores_all = distances[:, 0]  # (B * n_patches,)
+
+        # Разбиваем на отдельные изображения и строим результаты
+        results: list[PredictionResult] = []
+
+        for img_idx in range(B):
+            start = img_idx * n_patches
+            end = start + n_patches
+
+            # Патч-скоры одного изображения
+            patch_scores = patch_scores_all[start:end]  # (n_patches,)
+            img_distances = distances[start:end]        # (n_patches, k_search)
+            img_nn_indices = nn_indices[start:end]      # (n_patches, k_search)
+
+            # Шаг 3: находим наиболее аномальный патч
+            most_anomalous_patch_idx = int(np.argmax(patch_scores))
+            s_star = float(patch_scores[most_anomalous_patch_idx])
+
+            # Шаг 4: re-weighting (формула 7 статьи)
+            image_score = self._reweight_score(
+                s_star=s_star,
+                most_anomalous_idx=most_anomalous_patch_idx,
+                img_distances=img_distances,
+            )
+
+            # Шаг 5: строим карту аномальности
+            anomaly_map = self._build_anomaly_map(
+                patch_scores=patch_scores,
+                spatial_size=(H_feat, W_feat),
+            )
+
+            results.append(
+                PredictionResult(
+                    image_score=image_score,
+                    anomaly_map=anomaly_map,
+                    patch_scores=patch_scores,
+                    spatial_size=(H_feat, W_feat),
+                )
+            )
+
+        return results
+
+    def predict_single(self, image: torch.Tensor) -> PredictionResult:
+        """
+        Удобная обёртка predict() для одного изображения.
+
+        Args:
+            image: Одно изображение (3, 224, 224) или (1, 3, 224, 224).
+
+        Returns:
+            PredictionResult для этого изображения.
+        """
+        if image.ndim == 3:
+            image = image.unsqueeze(0)  # (3, H, W) → (1, 3, H, W)
+        return self.predict(image)[0]
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Приватные методы: математика инференса
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _reweight_score(
+        self,
+        s_star: float,
+        most_anomalous_idx: int,
+        img_distances: np.ndarray,
+    ) -> float:
+        """
+        Re-weighting скора аномальности (формула 7 статьи).
+
+        Идея: если ближайший сосед m* сам находится в редкой области
+        пространства (далеко от своих соседей в M_C), то расстояние
+        до него может быть большим даже для нормального патча.
+        Корректируем скор, учитывая плотность окрестности m*.
+
+        Формула:
+          s = (1 − exp(s*) / Σ_{m ∈ Nb(m*)} exp(‖m_test* − m‖₂)) · s*
+
+        Числитель exp(s*) — вклад самого аномального патча.
+        Знаменатель — сумма по b ближайшим соседям m* в M_C.
+        Чем плотнее окрестность → знаменатель больше → скор меньше.
+
+        Args:
+            s_star:              Максимальное патч-расстояние.
+            most_anomalous_idx:  Индекс наиболее аномального патча.
+            img_distances:       (n_patches, k_search) расстояния до соседей.
+
+        Returns:
+            Скорректированный image-level скор s.
+        """
+        # Расстояния от наиболее аномального патча до его b+1 соседей в M_C
+        # img_distances[most_anomalous_idx]: (k_search,)
+        # k_search = n_reweight_nn + 1, первый сосед — сам патч (dist=s*)
+        neighbour_distances = img_distances[most_anomalous_idx]  # (k_search,)
+
+        # Вычисляем softmax-подобный вес (формула 7)
+        # exp значений могут быть большими → используем численно стабильную версию
+        exp_distances = np.exp(neighbour_distances - neighbour_distances.max())
+        # Вес аномального патча — первый элемент (ближайший сосед)
+        weight = 1.0 - (exp_distances[0] / exp_distances.sum())
+
+        return float(weight * s_star)
+
+    def _build_anomaly_map(
+        self,
+        patch_scores: np.ndarray,
+        spatial_size: tuple[int, int],
+    ) -> np.ndarray:
+        """
+        Строит финальную тепловую карту аномальности (224×224).
+
+        Шаги:
+          1. Разворачиваем вектор патч-скоров в 2D-карту (H_feat, W_feat)
+          2. Билинейный апскейл до (224, 224)
+          3. Нормализация в [0, 1]
+          4. Гауссово сглаживание σ=4
+
+        Args:
+            patch_scores:  (H_feat * W_feat,) float32 — скоры патчей.
+            spatial_size:  (H_feat, W_feat) — размер карты признаков.
+
+        Returns:
+            (224, 224) float32 — тепловая карта аномальности в [0, 1].
+        """
+        H_feat, W_feat = spatial_size
+
+        # Шаг 1: вектор → 2D-карта
+        score_map = patch_scores.reshape(H_feat, W_feat)  # (H_feat, W_feat)
+
+        # Шаг 2: апскейл до 224×224 через билинейную интерполяцию
+        # F.interpolate ожидает (B, C, H, W)
+        score_tensor = torch.from_numpy(score_map).unsqueeze(0).unsqueeze(0)
+        upscaled = F.interpolate(
+            score_tensor,
+            size=(_OUTPUT_SIZE, _OUTPUT_SIZE),
+            mode="bilinear",
+            align_corners=False,
+        )
+        upscaled_np = upscaled.squeeze().numpy()  # (224, 224)
+
+        # Шаг 3: нормализация в [0, 1]
+        min_val, max_val = upscaled_np.min(), upscaled_np.max()
+        if max_val > min_val:
+            upscaled_np = (upscaled_np - min_val) / (max_val - min_val)
+
+        # Шаг 4: гауссово сглаживание σ=4
+        # Авторы: «smoothed the result with a Gaussian of kernel width σ=4»
+        smoothed = gaussian_filter(upscaled_np, sigma=self.gaussian_sigma)
+
+        return smoothed.astype(np.float32)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Сохранение / загрузка
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def save(self, path: str) -> None:
+        """
+        Сохраняет состояние модели (косет M_C и метаданные).
+
+        Сохраняется только косет — backbone не нужен, он всегда
+        загружается заново из torchvision с фиксированными весами.
+
+        Args:
+            path: Путь к файлу (.pt).
+        """
+        if not self.nn_index.is_fitted:
+            raise RuntimeError("Модель не обучена. Вызовите fit() сначала.")
+
+        state = {
+            "memory_bank": self.nn_index.memory_bank,
+            "spatial_size": self._spatial_size,
+            "coreset_ratio": self.coreset_sampler.ratio,
+            "n_reweight_nn": self.n_reweight_nn,
+            "gaussian_sigma": self.gaussian_sigma,
+        }
+        torch.save(state, path)
+        print(f"[PatchCore] Модель сохранена: {path}")
+
+    def load(self, path: str) -> None:
+        """
+        Загружает сохранённое состояние модели.
+
+        Args:
+            path: Путь к файлу (.pt), сохранённому через save().
+        """
+        state = torch.load(path, map_location="cpu", weights_only=True)
+
+        self._spatial_size = state["spatial_size"]
+        self.n_reweight_nn = state["n_reweight_nn"]
+        self.gaussian_sigma = state["gaussian_sigma"]
+
+        self.nn_index.fit(state["memory_bank"])
+        print(f"[PatchCore] Модель загружена: {path}")
+        print(f"  Размер M_C: {state['memory_bank'].shape}")
+
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def __repr__(self) -> str:
+        status = "fitted" if self.nn_index.is_fitted else "not fitted"
+        return (
+            f"{self.__class__.__name__}("
+            f"device={self.device}, "
+            f"coreset_ratio={self.coreset_sampler.ratio}, "
+            f"status={status}"
+            f")"
+        )
