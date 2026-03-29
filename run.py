@@ -135,6 +135,9 @@ def main(args: argparse.Namespace) -> None:
         model.fit(args.train_dir)
         print(f"[fit] Время: {time.time() - t0:.1f}с\n")
 
+        # Вычисляем диапазон скоров по train-данным для корректной визуализации
+        model.compute_score_range(args.train_dir)
+
         if args.save_path:
             Path(args.save_path).parent.mkdir(parents=True, exist_ok=True)
             model.save(args.save_path)

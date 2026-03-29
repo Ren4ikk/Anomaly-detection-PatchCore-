@@ -45,6 +45,8 @@ def _save_results(
     output_dir: Path,
     image_name: str,
     threshold: float,
+    score_min: float,
+    score_max: float,
 ) -> None:
     """
     Сохраняет три файла:
@@ -55,11 +57,14 @@ def _save_results(
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(image_name).stem
 
-    # Нормализуем карту в [0,1] только для визуализации
-    # (в patchcore.py карта хранится в сырых L2-расстояниях для корректных метрик)
-    map_min, map_max = anomaly_map.min(), anomaly_map.max()
+    # Нормализуем карту в [0,1] по глобальному диапазону из train-данных.
+    # Это гарантирует что нормальные изображения будут синими,
+    # а аномальные — красными, независимо от конкретного изображения.
+    map_min = score_min
+    map_max = score_max
     if map_max > map_min:
         anomaly_map_vis = (anomaly_map - map_min) / (map_max - map_min)
+        anomaly_map_vis = anomaly_map_vis.clip(0.0, 1.0)
     else:
         anomaly_map_vis = anomaly_map.copy()
 
@@ -177,6 +182,8 @@ def main(args: argparse.Namespace) -> None:
         output_dir=output_dir,
         image_name=image_path.name,
         threshold=args.threshold,
+        score_min=model.score_min,
+        score_max=model.score_max,
     )
 
     print("\n[Infer] Готово.")

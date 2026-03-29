@@ -136,6 +136,11 @@ class PatchCore:
         # Пространственный размер карты признаков — заполняется при fit()
         self._spatial_size: Optional[tuple[int, int]] = None
 
+        # Глобальный диапазон скоров для визуализации — заполняется через
+        # compute_score_range() после fit()
+        self.score_min: float = 0.0
+        self.score_max: float = 1.0
+
     # ──────────────────────────────────────────────────────────────────────────
     # fit()
     # ──────────────────────────────────────────────────────────────────────────
@@ -200,6 +205,46 @@ class PatchCore:
         print("[PatchCore] Построение FAISS-индекса...")
         self.nn_index.fit(coreset)
         print("[PatchCore] fit() завершён.")
+
+    def compute_score_range(self, train_image_dir: str) -> None:
+        """
+        Вычисляет глобальный диапазон скоров по train-изображениям.
+
+        Прогоняет все нормальные train-изображения через predict() и
+        сохраняет min/max скоров карт аномальности. Эти значения
+        используются в infer.py для нормализации визуализации:
+        нормальные изображения будут синими, аномальные — красными.
+
+        Вызывать ПОСЛЕ fit(). Диапазон сохраняется в файл модели через save().
+
+        Args:
+            train_image_dir: Та же папка что и в fit().
+        """
+        print("[PatchCore] Вычисление диапазона скоров по train-данным...")
+
+        dataset = PatchCoreDataset(root=train_image_dir)
+        loader = DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            pin_memory=(self.device.type == "cuda"),
+            drop_last=False,
+        )
+
+        all_map_maxes: list[float] = []
+
+        for images in loader:
+            results = self.predict(images)
+            for r in results:
+                all_map_maxes.append(float(r.anomaly_map.max()))
+
+        # min всегда 0 (расстояния неотрицательны)
+        # max = 99-й перцентиль нормальных скоров
+        # (99-й а не 100-й чтобы выбросы не растянули шкалу)
+        self.score_min = 0.0
+        self.score_max = float(np.percentile(all_map_maxes, 99)) * 1.5
+        print(f"[PatchCore] Диапазон скоров: [{self.score_min:.4f}, {self.score_max:.4f}]")
 
     # ──────────────────────────────────────────────────────────────────────────
     # predict()
@@ -447,6 +492,8 @@ class PatchCore:
             "coreset_ratio": self.coreset_sampler.ratio,
             "n_reweight_nn": self.n_reweight_nn,
             "gaussian_sigma": self.gaussian_sigma,
+            "score_min": self.score_min,
+            "score_max": self.score_max,
         }
         torch.save(state, path)
         print(f"[PatchCore] Модель сохранена: {path}")
@@ -463,10 +510,13 @@ class PatchCore:
         self._spatial_size = state["spatial_size"]
         self.n_reweight_nn = state["n_reweight_nn"]
         self.gaussian_sigma = state["gaussian_sigma"]
+        self.score_min = float(state.get("score_min", 0.0))
+        self.score_max = float(state.get("score_max", 1.0))
 
         self.nn_index.fit(state["memory_bank"])
         print(f"[PatchCore] Модель загружена: {path}")
         print(f"  Размер M_C: {state['memory_bank'].shape}")
+        print(f"  Диапазон скоров: [{self.score_min:.4f}, {self.score_max:.4f}]")
 
     # ──────────────────────────────────────────────────────────────────────────
 
