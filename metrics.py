@@ -127,7 +127,7 @@ def _compute_pro(
     fpr_limit = 0.3
     mask = fprs <= fpr_limit
     if mask.sum() > 1:
-        pro_auc = float(np.trapz(pros[mask], fprs[mask]) / fpr_limit)
+        pro_auc = float(np.trapezoid(pros[mask], fprs[mask]) / fpr_limit)
     else:
         pro_auc = 0.0
 

@@ -1,6 +1,6 @@
 $ModelPath  = "./models/capsule.pt"
-$ImagePath  = "./mvtec_Defect_detection_dataset/capsule/test/faulty_imprint/014.png"
+$ImagePath  = "./mvtec_Defect_detection_dataset/capsule/test/good/000.png"
 $OutputDir  = "./results"
-$Threshold  = "0.62"
+$Threshold  = "0.86"
 
 poetry run python infer.py --model $ModelPath --image $ImagePath --output_dir $OutputDir --threshold $Threshold

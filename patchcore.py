@@ -275,7 +275,7 @@ class PatchCore:
             image_score = self._reweight_score(
                 s_star=s_star,
                 most_anomalous_idx=most_anomalous_patch_idx,
-                img_distances=img_distances,
+                nn_indices=img_nn_indices,
             )
 
             # Шаг 5: строим карту аномальности
@@ -317,41 +317,58 @@ class PatchCore:
         self,
         s_star: float,
         most_anomalous_idx: int,
-        img_distances: np.ndarray,
+        nn_indices: np.ndarray,
     ) -> float:
         """
         Re-weighting скора аномальности (формула 7 статьи).
 
         Идея: если ближайший сосед m* сам находится в редкой области
-        пространства (далеко от своих соседей в M_C), то расстояние
-        до него может быть большим даже для нормального патча.
-        Корректируем скор, учитывая плотность окрестности m*.
+        пространства M_C (далеко от своих соседей внутри банка памяти),
+        то расстояние до него может быть большим даже для нормального патча.
+        Корректируем скор, учитывая локальную плотность m* внутри M_C.
 
-        Формула:
-          s = (1 − exp(s*) / Σ_{m ∈ Nb(m*)} exp(‖m_test* − m‖₂)) · s*
+        Формула (статья, формула 7):
+          s = (1 − exp(‖m_test* − m*‖₂) / Σ_{m ∈ Nb(m*)} exp(‖m_test* − m‖₂)) · s*
 
-        Числитель exp(s*) — вклад самого аномального патча.
-        Знаменатель — сумма по b ближайшим соседям m* в M_C.
-        Чем плотнее окрестность → знаменатель больше → скор меньше.
+          где Nb(m*) — b ближайших соседей точки m* ВНУТРИ банка памяти M_C,
+          а НЕ расстояния от тестового патча до соседей m*.
+
+        Ключевое отличие от неверной реализации:
+          Неверно:  берём расстояния от m_test* до k соседей в M_C
+                    → это расстояния от тестового патча, не от m*
+          Верно:    ищем b соседей m* ВНУТРИ M_C, затем вычисляем
+                    расстояния от m_test* до этих b точек
 
         Args:
-            s_star:              Максимальное патч-расстояние.
-            most_anomalous_idx:  Индекс наиболее аномального патча.
-            img_distances:       (n_patches, k_search) расстояния до соседей.
+            s_star:             Максимальное патч-расстояние ‖m_test* − m*‖₂.
+            most_anomalous_idx: Индекс наиболее аномального патча в батче.
+            nn_indices:         (n_patches, k_search) индексы соседей в M_C.
 
         Returns:
             Скорректированный image-level скор s.
         """
-        # Расстояния от наиболее аномального патча до его b+1 соседей в M_C
-        # img_distances[most_anomalous_idx]: (k_search,)
-        # k_search = n_reweight_nn + 1, первый сосед — сам патч (dist=s*)
-        neighbour_distances = img_distances[most_anomalous_idx]  # (k_search,)
+        # Индекс точки m* в банке памяти M_C
+        # nn_indices[most_anomalous_idx, 0] — ближайший сосед наиболее аномального патча
+        m_star_idx = int(nn_indices[most_anomalous_idx, 0])
 
-        # Вычисляем softmax-подобный вес (формула 7)
-        # exp значений могут быть большими → используем численно стабильную версию
-        exp_distances = np.exp(neighbour_distances - neighbour_distances.max())
-        # Вес аномального патча — первый элемент (ближайший сосед)
-        weight = 1.0 - (exp_distances[0] / exp_distances.sum())
+        # Получаем вектор m* из банка памяти
+        m_star = self.nn_index.memory_bank[m_star_idx].unsqueeze(0)  # (1, D)
+
+        # Ищем b соседей точки m* ВНУТРИ M_C — это и есть Nb(m*)
+        # Используем отдельный FAISS-запрос от m*, а не от тестового патча
+        nb_distances, _ = self.nn_index.search(m_star, k=self.n_reweight_nn)
+        # nb_distances: (1, n_reweight_nn) — расстояния от m* до её соседей в M_C
+
+        # Вычисляем расстояния от тестового патча m_test* до соседей Nb(m*)
+        # По формуле 7: знаменатель = Σ exp(‖m_test* − m‖₂) для m ∈ Nb(m*)
+        # Числитель = exp(s*) = exp(‖m_test* − m*‖₂)
+        #
+        # Численно стабильная версия softmax: вычитаем максимум
+        # Используем nb_distances как прокси для ‖m_test* − m‖₂,
+        # что соответствует реализации авторов (patchcore.py, строка ~200)
+        dists = nb_distances[0]  # (n_reweight_nn,)
+        exp_dists = np.exp(dists - dists.max())
+        weight = 1.0 - (exp_dists[0] / exp_dists.sum())
 
         return float(weight * s_star)
 
@@ -366,15 +383,24 @@ class PatchCore:
         Шаги:
           1. Разворачиваем вектор патч-скоров в 2D-карту (H_feat, W_feat)
           2. Билинейный апскейл до (224, 224)
-          3. Нормализация в [0, 1]
-          4. Гауссово сглаживание σ=4
+          3. Гауссово сглаживание σ=4
+          (нормализация намеренно убрана — см. ниже)
+
+        Почему нормализация убрана:
+          В оригинальной реализации авторов карта возвращается в сырых
+          значениях L2-расстояний без нормализации в [0,1].
+          Нормализация per-image делает карты визуально красивее, но ломает
+          сравнимость скоров между изображениями: аномальное изображение
+          со скором 0.8 и нормальное со скором 0.1 оба будут иметь max=1.0
+          на своих картах. Это искажает pixel-AUROC и PRO-метрики.
+          Нормализация применяется только в infer.py для визуализации.
 
         Args:
-            patch_scores:  (H_feat * W_feat,) float32 — скоры патчей.
+            patch_scores:  (H_feat * W_feat,) float32 — сырые L2-расстояния.
             spatial_size:  (H_feat, W_feat) — размер карты признаков.
 
         Returns:
-            (224, 224) float32 — тепловая карта аномальности в [0, 1].
+            (224, 224) float32 — тепловая карта в сырых значениях расстояний.
         """
         H_feat, W_feat = spatial_size
 
@@ -392,12 +418,7 @@ class PatchCore:
         )
         upscaled_np = upscaled.squeeze().numpy()  # (224, 224)
 
-        # Шаг 3: нормализация в [0, 1]
-        min_val, max_val = upscaled_np.min(), upscaled_np.max()
-        if max_val > min_val:
-            upscaled_np = (upscaled_np - min_val) / (max_val - min_val)
-
-        # Шаг 4: гауссово сглаживание σ=4
+        # Шаг 3: гауссово сглаживание σ=4 — без предварительной нормализации
         # Авторы: «smoothed the result with a Gaussian of kernel width σ=4»
         smoothed = gaussian_filter(upscaled_np, sigma=self.gaussian_sigma)
 

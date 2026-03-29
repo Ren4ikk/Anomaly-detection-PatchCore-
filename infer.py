@@ -55,9 +55,17 @@ def _save_results(
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(image_name).stem
 
+    # Нормализуем карту в [0,1] только для визуализации
+    # (в patchcore.py карта хранится в сырых L2-расстояниях для корректных метрик)
+    map_min, map_max = anomaly_map.min(), anomaly_map.max()
+    if map_max > map_min:
+        anomaly_map_vis = (anomaly_map - map_min) / (map_max - map_min)
+    else:
+        anomaly_map_vis = anomaly_map.copy()
+
     # Цветовая карта: синий (норма) → красный (аномалия)
     colormap = cm.jet
-    heatmap_rgba = colormap(anomaly_map)          # (H, W, 4) float [0,1]
+    heatmap_rgba = colormap(anomaly_map_vis)       # (H, W, 4) float [0,1]
     heatmap_rgb  = (heatmap_rgba[:, :, :3] * 255).astype(np.uint8)
 
     # Overlay: смешиваем оригинал и тепловую карту
@@ -70,7 +78,7 @@ def _save_results(
     # ── Сохраняем heatmap ────────────────────────────────────────────────
     heatmap_path = output_dir / f"{stem}_heatmap.png"
     fig, ax = plt.subplots(figsize=(5, 5))
-    im = ax.imshow(anomaly_map, cmap="jet", vmin=0, vmax=1)
+    im = ax.imshow(anomaly_map_vis, cmap="jet", vmin=0, vmax=1)
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     ax.set_title(f"Anomaly Score: {image_score:.4f}", fontsize=12)
     ax.axis("off")
@@ -94,7 +102,7 @@ def _save_results(
     axes[0].set_title("Оригинал", fontsize=13)
     axes[0].axis("off")
 
-    im = axes[1].imshow(anomaly_map, cmap="jet", vmin=0, vmax=1)
+    im = axes[1].imshow(anomaly_map_vis, cmap="jet", vmin=0, vmax=1)
     axes[1].set_title("Тепловая карта", fontsize=13)
     axes[1].axis("off")
     plt.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
