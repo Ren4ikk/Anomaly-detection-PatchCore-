@@ -136,10 +136,11 @@ class PatchCore:
         # Пространственный размер карты признаков — заполняется при fit()
         self._spatial_size: Optional[tuple[int, int]] = None
 
-        # Глобальный диапазон скоров для визуализации — заполняется через
-        # compute_score_range() после fit()
+        # Глобальный диапазон скоров для визуализации и порог —
+        # заполняются через compute_score_range() после fit()
         self.score_min: float = 0.0
         self.score_max: float = 1.0
+        self.threshold: float = 0.5  # обновляется через compute_score_range()
 
     # ──────────────────────────────────────────────────────────────────────────
     # fit()
@@ -208,19 +209,29 @@ class PatchCore:
 
     def compute_score_range(self, train_image_dir: str) -> None:
         """
-        Вычисляет глобальный диапазон скоров по train-изображениям.
+        Вычисляет глобальный диапазон скоров и порог по train-изображениям.
 
         Прогоняет все нормальные train-изображения через predict() и
-        сохраняет min/max скоров карт аномальности. Эти значения
-        используются в infer.py для нормализации визуализации:
-        нормальные изображения будут синими, аномальные — красными.
+        вычисляет три значения:
 
-        Вызывать ПОСЛЕ fit(). Диапазон сохраняется в файл модели через save().
+          score_max  — верхняя граница шкалы визуализации.
+                       Формула: percentile(map_maxes, 99) * k,
+                       где k = max / percentile(99) — естественный разброс
+                       в train-данных. Даёт запас сверху без ручной настройки.
+
+          threshold  — порог для вынесения вердикта НОРМА/АНОМАЛИЯ.
+                       Формула: mean(image_scores) + 3 * std(image_scores).
+                       Правило 3σ: покрывает 99.7% нормального распределения,
+                       всё что выше — статистически аномально.
+
+          score_min  — всегда 0.0 (L2-расстояния неотрицательны).
+
+        Вызывать ПОСЛЕ fit(). Все значения сохраняются в файл модели через save().
 
         Args:
             train_image_dir: Та же папка что и в fit().
         """
-        print("[PatchCore] Вычисление диапазона скоров по train-данным...")
+        print("[PatchCore] Вычисление диапазона скоров и порога по train-данным...")
 
         dataset = PatchCoreDataset(root=train_image_dir)
         loader = DataLoader(
@@ -232,19 +243,36 @@ class PatchCore:
             drop_last=False,
         )
 
+        all_image_scores: list[float] = []
         all_map_maxes: list[float] = []
 
         for images in loader:
             results = self.predict(images)
             for r in results:
+                all_image_scores.append(r.image_score)
                 all_map_maxes.append(float(r.anomaly_map.max()))
 
-        # min всегда 0 (расстояния неотрицательны)
-        # max = 99-й перцентиль нормальных скоров
-        # (99-й а не 100-й чтобы выбросы не растянули шкалу)
+        scores_arr = np.array(all_image_scores, dtype=np.float32)
+        map_maxes_arr = np.array(all_map_maxes, dtype=np.float32)
+
+        # ── score_max ────────────────────────────────────────────────────────
+        # k = естественный разброс в train-данных (запас сверху без ручной настройки)
+        p99 = float(np.percentile(map_maxes_arr, 99))
+        p100 = float(np.max(map_maxes_arr))
+        k = (p100 / p99) if p99 > 0 else 1.5
+        # Ограничиваем k в разумных пределах [1.1, 3.0]
+        k = float(np.clip(k, 1.1, 3.0))
         self.score_min = 0.0
-        self.score_max = float(np.percentile(all_map_maxes, 99)) * 1.5
-        print(f"[PatchCore] Диапазон скоров: [{self.score_min:.4f}, {self.score_max:.4f}]")
+        self.score_max = p99 * k
+
+        # ── threshold ────────────────────────────────────────────────────────
+        # Правило 3σ: mean + 3*std покрывает 99.7% нормального распределения
+        mean_score = float(np.mean(scores_arr))
+        std_score  = float(np.std(scores_arr))
+        self.threshold = mean_score + 3.0 * std_score
+
+        print(f"[PatchCore] Диапазон карты : [{self.score_min:.4f}, {self.score_max:.4f}]")
+        print(f"[PatchCore] Порог (3σ)     : {self.threshold:.4f}  "              f"(mean={mean_score:.4f}, std={std_score:.4f})")
 
     # ──────────────────────────────────────────────────────────────────────────
     # predict()
@@ -494,6 +522,7 @@ class PatchCore:
             "gaussian_sigma": self.gaussian_sigma,
             "score_min": self.score_min,
             "score_max": self.score_max,
+            "threshold": self.threshold,
         }
         torch.save(state, path)
         print(f"[PatchCore] Модель сохранена: {path}")
@@ -512,11 +541,13 @@ class PatchCore:
         self.gaussian_sigma = state["gaussian_sigma"]
         self.score_min = float(state.get("score_min", 0.0))
         self.score_max = float(state.get("score_max", 1.0))
+        self.threshold = float(state.get("threshold", 0.5))
 
         self.nn_index.fit(state["memory_bank"])
         print(f"[PatchCore] Модель загружена: {path}")
-        print(f"  Размер M_C: {state['memory_bank'].shape}")
-        print(f"  Диапазон скоров: [{self.score_min:.4f}, {self.score_max:.4f}]")
+        print(f"  Размер M_C  : {state['memory_bank'].shape}")
+        print(f"  Диапазон    : [{self.score_min:.4f}, {self.score_max:.4f}]")
+        print(f"  Порог (3σ)  : {self.threshold:.4f}")
 
     # ──────────────────────────────────────────────────────────────────────────
 

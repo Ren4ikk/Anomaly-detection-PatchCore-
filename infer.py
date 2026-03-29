@@ -57,11 +57,18 @@ def _save_results(
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(image_name).stem
 
-    # Нормализуем карту в [0,1] по глобальному диапазону из train-данных.
-    # Это гарантирует что нормальные изображения будут синими,
-    # а аномальные — красными, независимо от конкретного изображения.
+    # Нормализация карты для визуализации.
+    #
+    # Используем гибридный подход:
+    #   map_min = score_min из train (всегда 0.0)
+    #   map_max = max(score_max из train, фактический max карты)
+    #
+    # Это решает две проблемы одновременно:
+    #   1. Нормальные изображения (скор <= score_max) → синие/зелёные
+    #   2. Сильно аномальные изображения (скор >> score_max) → шкала
+    #      растягивается до реального максимума, аномалия не «зашкаливает»
     map_min = score_min
-    map_max = score_max
+    map_max = max(score_max, float(anomaly_map.max()))
     if map_max > map_min:
         anomaly_map_vis = (anomaly_map - map_min) / (map_max - map_min)
         anomaly_map_vis = anomaly_map_vis.clip(0.0, 1.0)
@@ -165,9 +172,11 @@ def main(args: argparse.Namespace) -> None:
 
     print(f"\n{'='*40}")
     print(f"  Image Score : {result.image_score:.6f}")
-    print(f"  Порог       : {args.threshold}")
-    verdict = "АНОМАЛИЯ" if result.image_score >= args.threshold else "НОРМА"
-    verdict_sign = "🔴" if result.image_score >= args.threshold else "🟢"
+    # Если порог не передан явно (==0.5 дефолт) — используем автоматический из модели
+    threshold = args.threshold if args.threshold != 0.5 else model.threshold
+    print(f"  Порог       : {threshold:.4f} ({'авто 3σ' if args.threshold == 0.5 else 'ручной'})")
+    verdict = "АНОМАЛИЯ" if result.image_score >= threshold else "НОРМА"
+    verdict_sign = "🔴" if result.image_score >= threshold else "🟢"
     print(f"  Вердикт     : {verdict_sign} {verdict}")
     print(f"{'='*40}\n")
 
@@ -181,7 +190,7 @@ def main(args: argparse.Namespace) -> None:
         image_score=result.image_score,
         output_dir=output_dir,
         image_name=image_path.name,
-        threshold=args.threshold,
+        threshold=threshold,
         score_min=model.score_min,
         score_max=model.score_max,
     )
