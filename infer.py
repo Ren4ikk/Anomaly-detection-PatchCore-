@@ -52,26 +52,34 @@ def _save_results(
     stem = Path(image_name).stem
 
     # ---------------------------------------------------------
-    # Гибридная нормализация (наилучшая практика для PatchCore)
+    # Нормализация с жесткой привязкой к порогу (Threshold-Centric)
     # ---------------------------------------------------------
 
-    # 1. Нижняя граница (синий): берем локальный фон текущей картинки.
-    # Используем 10-й перцентиль, чтобы отбросить случайный шум.
-    val_min = float(np.percentile(anomaly_map, 10))
+    anomaly_map_vis = np.zeros_like(anomaly_map)
 
-    # 2. Верхняя граница (красный): глобальный score_max из обучающей выборки.
-    # Если текущая картинка аномальная и её максимум больше score_max,
-    # мы расширяем границу, чтобы красное пятно не было плоским.
-    current_max = float(np.max(anomaly_map))
-    val_max = max(score_max, current_max)
+    # 1. Зона НОРМЫ (от синего до зелено-желтого)
+    # Все пиксели со скором меньше threshold попадают в диапазон [0.0, 0.5]
+    mask_low = anomaly_map < threshold
+    # Если threshold = 0, защищаемся от деления на ноль
+    safe_threshold = threshold if threshold > 0 else 1e-8
+    anomaly_map_vis[mask_low] = 0.5 * (anomaly_map[mask_low] / safe_threshold)
 
-    # Защита от деления на ноль
-    denominator = val_max - val_min
+    # 2. Зона АНОМАЛИИ (от желтого до красного)
+    # Все пиксели со скором больше или равным threshold попадают в [0.5, 1.0]
+    mask_high = anomaly_map >= threshold
+
+    # Определяем "потолок" для красного цвета. Берем максимум на карте,
+    # но делаем запас минимум в 1.5 раза больше порога, чтобы слабые
+    # аномалии (чуть выше порога) были оранжевыми, а не сразу ярко-красными.
+    max_val = max(anomaly_map.max(), threshold * 1.5)
+
+    denominator = max_val - threshold
     if denominator <= 0:
         denominator = 1e-8
 
-    # Нормализуем в диапазон [0, 1]
-    anomaly_map_vis = (anomaly_map - val_min) / denominator
+    anomaly_map_vis[mask_high] = 0.5 + 0.5 * ((anomaly_map[mask_high] - threshold) / denominator)
+
+    # Отрезаем возможные вылеты за пределы
     anomaly_map_vis = anomaly_map_vis.clip(0.0, 1.0)
     # ---------------------------------------------------------
 
