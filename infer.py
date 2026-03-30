@@ -39,46 +39,46 @@ def _get_device() -> torch.device:
 
 
 def _save_results(
-    original: np.ndarray,
-    anomaly_map: np.ndarray,
-    image_score: float,
-    output_dir: Path,
-    image_name: str,
-    threshold: float,
-    score_min: float,
-    score_max: float,
+        original: np.ndarray,
+        anomaly_map: np.ndarray,
+        image_score: float,
+        output_dir: Path,
+        image_name: str,
+        threshold: float,
+        score_min: float,
+        score_max: float,
 ) -> None:
-    """
-    Сохраняет три файла:
-      {name}_heatmap.png  — тепловая карта
-      {name}_overlay.png  — наложение на оригинал
-      {name}_comparison.png — все три рядом
-    """
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(image_name).stem
 
-    # Нормализация карты для визуализации.
-    #
-    # Используем гибридный подход:
-    #   map_min = score_min из train (всегда 0.0)
-    #   map_max = max(score_max из train, фактический max карты)
-    #
-    # Это решает две проблемы одновременно:
-    #   1. Нормальные изображения (скор <= score_max) → синие/зелёные
-    #   2. Сильно аномальные изображения (скор >> score_max) → шкала
-    #      растягивается до реального максимума, аномалия не «зашкаливает»
-    map_min = score_min
-    map_max = max(score_max, float(anomaly_map.max()))
-    if map_max > map_min:
-        anomaly_map_vis = (anomaly_map - map_min) / (map_max - map_min)
-        anomaly_map_vis = anomaly_map_vis.clip(0.0, 1.0)
-    else:
-        anomaly_map_vis = anomaly_map.copy()
+    # ---------------------------------------------------------
+    # Гибридная нормализация (наилучшая практика для PatchCore)
+    # ---------------------------------------------------------
+
+    # 1. Нижняя граница (синий): берем локальный фон текущей картинки.
+    # Используем 10-й перцентиль, чтобы отбросить случайный шум.
+    val_min = float(np.percentile(anomaly_map, 10))
+
+    # 2. Верхняя граница (красный): глобальный score_max из обучающей выборки.
+    # Если текущая картинка аномальная и её максимум больше score_max,
+    # мы расширяем границу, чтобы красное пятно не было плоским.
+    current_max = float(np.max(anomaly_map))
+    val_max = max(score_max, current_max)
+
+    # Защита от деления на ноль
+    denominator = val_max - val_min
+    if denominator <= 0:
+        denominator = 1e-8
+
+    # Нормализуем в диапазон [0, 1]
+    anomaly_map_vis = (anomaly_map - val_min) / denominator
+    anomaly_map_vis = anomaly_map_vis.clip(0.0, 1.0)
+    # ---------------------------------------------------------
 
     # Цветовая карта: синий (норма) → красный (аномалия)
     colormap = cm.jet
-    heatmap_rgba = colormap(anomaly_map_vis)       # (H, W, 4) float [0,1]
-    heatmap_rgb  = (heatmap_rgba[:, :, :3] * 255).astype(np.uint8)
+    heatmap_rgba = colormap(anomaly_map_vis)  # (H, W, 4) float [0,1]
+    heatmap_rgb = (heatmap_rgba[:, :, :3] * 255).astype(np.uint8)
 
     # Overlay: смешиваем оригинал и тепловую карту
     alpha = 0.5

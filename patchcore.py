@@ -252,27 +252,41 @@ class PatchCore:
                 all_image_scores.append(r.image_score)
                 all_map_maxes.append(float(r.anomaly_map.max()))
 
-        scores_arr = np.array(all_image_scores, dtype=np.float32)
-        map_maxes_arr = np.array(all_map_maxes, dtype=np.float32)
+        scores_arr    = np.array(all_image_scores, dtype=np.float32)
+        map_maxes_arr = np.array(all_map_maxes,   dtype=np.float32)
 
-        # ── score_max ────────────────────────────────────────────────────────
-        # k = естественный разброс в train-данных (запас сверху без ручной настройки)
-        p99 = float(np.percentile(map_maxes_arr, 99))
-        p100 = float(np.max(map_maxes_arr))
-        k = (p100 / p99) if p99 > 0 else 1.5
-        # Ограничиваем k в разумных пределах [1.1, 3.0]
-        k = float(np.clip(k, 1.1, 3.0))
+        # ── score_max (для визуализации карты) ───────────────────────────────
+        # Берём максимальный map_max среди всех train-изображений.
+        # Это честная верхняя граница нормального класса — любое значение
+        # выше неё на карте гарантированно аномально относительно train.
+        # infer.py дополнительно берёт max(score_max, map.max()) чтобы
+        # сильно аномальные изображения не «зашкаливали».
         self.score_min = 0.0
-        self.score_max = p99 * k
+        self.score_max = float(np.max(map_maxes_arr))
 
-        # ── threshold ────────────────────────────────────────────────────────
-        # Правило 3σ: mean + 3*std покрывает 99.7% нормального распределения
-        mean_score = float(np.mean(scores_arr))
-        std_score  = float(np.std(scores_arr))
-        self.threshold = mean_score + 3.0 * std_score
+        # ── threshold (для вердикта НОРМА/АНОМАЛИЯ) ──────────────────────────
+        # Проблема 3σ: если train-скоры имеют маленький std (однородный датасет),
+        # порог получается слишком низким и не учитывает естественный разброс
+        # тестовых нормальных изображений.
+        #
+        # Решение — использовать максимум train-скоров с запасом:
+        #   threshold = max(train_scores) * safety_factor
+        #
+        # safety_factor вычисляется из самих train-данных как отношение
+        # 95-го перцентиля к 75-му перцентилю (межквартильный разброс верхней
+        # половины). Чем однороднее train → тем меньше разброс → тем меньше
+        # safety_factor → порог чуть выше максимума.
+        # Чем разнороднее train → safety_factor больше → порог с запасом.
+        p75  = float(np.percentile(scores_arr, 75))
+        p95  = float(np.percentile(scores_arr, 95))
+        safety_factor = (p95 / p75) if p75 > 0 else 1.2
+        # Ограничиваем в разумных пределах [1.05, 2.0]
+        safety_factor = float(np.clip(safety_factor, 1.05, 2.0))
+        self.threshold = float(np.max(scores_arr)) * safety_factor
 
         print(f"[PatchCore] Диапазон карты : [{self.score_min:.4f}, {self.score_max:.4f}]")
-        print(f"[PatchCore] Порог (3σ)     : {self.threshold:.4f}  "              f"(mean={mean_score:.4f}, std={std_score:.4f})")
+        print(f"[PatchCore] Порог          : {self.threshold:.4f}  "
+              f"(max_train={np.max(scores_arr):.4f}, safety={safety_factor:.3f})")
 
     # ──────────────────────────────────────────────────────────────────────────
     # predict()

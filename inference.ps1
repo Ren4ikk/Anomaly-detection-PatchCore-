@@ -1,5 +1,5 @@
 $ModelPath  = "./models/capsule.pt"
-$ImagePath  = "./mvtec_Defect_detection_dataset/capsule/train/good/000.png"
+$ImagePath  = "./mvtec_Defect_detection_dataset/capsule/test/crack/010.png"
 $OutputDir  = "./results"
 $Threshold  = "0.86"
 
