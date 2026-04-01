@@ -23,8 +23,8 @@ import numpy as np
 import torch
 from PIL import Image
 
-from dataset import build_train_transform
-from patchcore import PatchCore
+# from patchcore.dataset import build_train_transform
+from patchcore import PatchCore, build_train_transform
 
 
 # ─────────────────────────────────────────────────────────────────────────────

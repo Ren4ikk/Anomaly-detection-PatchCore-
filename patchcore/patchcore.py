@@ -35,10 +35,10 @@ import torch.nn.functional as F
 from scipy.ndimage import gaussian_filter
 from torch.utils.data import DataLoader
 
-from coreset_sampler import CoresetSampler
-from dataset import PatchCoreDataset, build_train_transform
-from feature_extractor import FeatureExtractor
-from nearest_neighbor_index import NearestNeighborIndex
+from patchcore.coreset_sampler import CoresetSampler
+from patchcore.dataset import PatchCoreDataset
+from patchcore.feature_extractor import FeatureExtractor
+from patchcore.nearest_neighbor_index import NearestNeighborIndex
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Константы
@@ -265,28 +265,19 @@ class PatchCore:
         self.score_max = float(np.max(map_maxes_arr))
 
         # ── threshold (для вердикта НОРМА/АНОМАЛИЯ) ──────────────────────────
-        # Проблема 3σ: если train-скоры имеют маленький std (однородный датасет),
-        # порог получается слишком низким и не учитывает естественный разброс
-        # тестовых нормальных изображений.
-        #
-        # Решение — использовать максимум train-скоров с запасом:
-        #   threshold = max(train_scores) * safety_factor
-        #
-        # safety_factor вычисляется из самих train-данных как отношение
-        # 95-го перцентиля к 75-му перцентилю (межквартильный разброс верхней
-        # половины). Чем однороднее train → тем меньше разброс → тем меньше
-        # safety_factor → порог чуть выше максимума.
-        # Чем разнороднее train → safety_factor больше → порог с запасом.
-        p75  = float(np.percentile(scores_arr, 75))
-        p95  = float(np.percentile(scores_arr, 95))
-        safety_factor = (p95 / p75) if p75 > 0 else 1.2
-        # Ограничиваем в разумных пределах [1.05, 2.0]
-        safety_factor = float(np.clip(safety_factor, 1.05, 2.0))
-        self.threshold = float(np.max(scores_arr)) * safety_factor
+        # Отказываемся от max(), чтобы один выброс в train не сломал порог.
+        # Берем 99-й перцентиль (отсекаем 1% возможных грязных данных в train)
+        # и добавляем запас в 3 стандартных отклонения.
+
+        std_score = float(np.std(scores_arr))
+        p99 = float(np.percentile(scores_arr, 99))
+
+        # Порог = граница 99% нормы + 3 сигмы для защиты от ложных срабатываний
+        self.threshold = p99 + 3 * std_score
 
         print(f"[PatchCore] Диапазон карты : [{self.score_min:.4f}, {self.score_max:.4f}]")
         print(f"[PatchCore] Порог          : {self.threshold:.4f}  "
-              f"(max_train={np.max(scores_arr):.4f}, safety={safety_factor:.3f})")
+              f"(p99={p99:.4f}, std={std_score:.4f}, max_train={np.max(scores_arr):.4f})")
 
     # ──────────────────────────────────────────────────────────────────────────
     # predict()

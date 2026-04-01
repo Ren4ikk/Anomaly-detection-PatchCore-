@@ -29,7 +29,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader
+
 
 # ─── проверка GPU ─────────────────────────────────────────────────────────────
 
@@ -111,9 +111,9 @@ def _load_test_data(
 def main(args: argparse.Namespace) -> None:
 
     # Импорты здесь — чтобы ошибки импорта были понятны
-    from dataset import build_train_transform
-    from patchcore import PatchCore
-    from metrics import Metrics
+    # from patchcore.dataset import build_train_transform
+    from patchcore import PatchCore, build_train_transform, Metrics
+    # from patchcore.metrics import Metrics
 
     device = _get_device()
     transform = build_train_transform()
