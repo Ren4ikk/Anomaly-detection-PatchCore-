@@ -1,0 +1,9 @@
+.idea
+mvtec_Defect_detection_dataset
+__pycache__/
+*.py[cod]
+*$py.class
+ *.pyc
+.venv
+models
+results
