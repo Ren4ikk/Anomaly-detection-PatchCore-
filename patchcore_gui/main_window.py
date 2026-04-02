@@ -14,6 +14,7 @@ import numpy as np
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QPalette, QColor, QPixmap
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -21,9 +22,11 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QSlider,
     QSplitter,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -38,7 +41,7 @@ from patchcore_gui.utils import (
     numpy_rgb_to_qpixmap,
     scaled_pixmap,
 )
-from patchcore_gui.workers import InferenceWorker, normalize_score, select_device
+from patchcore_gui.workers import InferenceWorker, TrainingWorker, normalize_score, select_device
 
 
 class ViewMode(IntEnum):
@@ -88,8 +91,15 @@ class MainWindow(QMainWindow):
         self._running: bool = False
 
         self._worker: Optional[InferenceWorker] = None
+        self._training_worker: Optional[TrainingWorker] = None
+        self._training_progress: Optional[QProgressDialog] = None
+        self._training_busy: bool = False
         self._score_min: float = 0.0
         self._score_max: float = 1.0
+        self._auto_threshold_norm: float = 0.5
+
+        self._train_image_dir: str = ""
+        self._train_save_path: str = ""
 
         self._last_path: str = ""
         self._last_raw_score: float = 0.0
@@ -104,6 +114,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._apply_dark_theme()
+        self._on_role_changed(self._role_combo.currentIndex())
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -112,8 +123,10 @@ class MainWindow(QMainWindow):
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(8)
 
+        outer.addWidget(self._build_role_bar())
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        left = self._build_left_panel()
+        left = self._build_left_column()
         center = self._build_center_panel()
         right = self._build_right_panel()
         splitter.addWidget(left)
@@ -136,16 +149,36 @@ class MainWindow(QMainWindow):
         lay.addWidget(lab)
         return frame, lay
 
-    def _build_left_panel(self) -> QFrame:
+    def _build_role_bar(self) -> QWidget:
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(QLabel("Режим:"))
+        self._role_combo = QComboBox()
+        self._role_combo.addItems(["Оператор", "Инженер"])
+        self._role_combo.currentIndexChanged.connect(self._on_role_changed)
+        h.addWidget(self._role_combo)
+        h.addStretch()
+        return row
+
+    def _build_left_column(self) -> QTabWidget:
+        """Один навигатор: у оператора полоска вкладок скрыта, у инженера — Инференс / Обучение."""
+        self._left_tabs = QTabWidget()
+        self._left_tabs.addTab(self._build_inference_tab(), "Инференс")
+        self._left_tabs.addTab(self._build_training_tab(), "Обучение (Fit)")
+        self._left_tabs.tabBar().setVisible(False)
+        return self._left_tabs
+
+    def _build_inference_tab(self) -> QFrame:
         frame, lay = self._frame("Управление")
         self._model_label = QLabel("Модель: не выбрана")
         self._model_label.setWordWrap(True)
-        btn_model = QPushButton("Обзор… (.pt)")
-        btn_model.clicked.connect(self._choose_model)
+        self._btn_choose_model = QPushButton("Обзор… (.pt)")
+        self._btn_choose_model.clicked.connect(self._choose_model)
         self._folder_label = QLabel("Папка: не выбрана")
         self._folder_label.setWordWrap(True)
-        btn_folder = QPushButton("Папка с изображениями")
-        btn_folder.clicked.connect(self._choose_folder)
+        self._btn_choose_folder = QPushButton("Папка с изображениями")
+        self._btn_choose_folder.clicked.connect(self._choose_folder)
 
         self._btn_start = QPushButton("▶ СТАРТ")
         self._btn_stop = QPushButton("⏹ СТОП")
@@ -156,12 +189,44 @@ class MainWindow(QMainWindow):
         self._btn_stop.setProperty("role", "stop")
 
         lay.addWidget(self._model_label)
-        lay.addWidget(btn_model)
+        lay.addWidget(self._btn_choose_model)
         lay.addWidget(self._folder_label)
-        lay.addWidget(btn_folder)
+        lay.addWidget(self._btn_choose_folder)
         lay.addStretch()
         lay.addWidget(self._btn_start)
         lay.addWidget(self._btn_stop)
+        return frame
+
+    def _build_training_tab(self) -> QFrame:
+        frame, lay = self._frame("Обучение модели (Fit)")
+        note = QLabel(
+            "Используйте только изображения нормального класса (без дефектов). "
+            "Алгоритм строит банк памяти исключительно из эталонов."
+        )
+        note.setWordWrap(True)
+        note.setProperty("role", "hint")
+        lay.addWidget(note)
+
+        self._train_dir_label = QLabel("Папка НОРМЫ: не выбрана")
+        self._train_dir_label.setWordWrap(True)
+        self._btn_choose_train_dir = QPushButton("Выбрать папку с НОРМОЙ")
+        self._btn_choose_train_dir.clicked.connect(self._choose_train_dir)
+
+        self._train_save_label = QLabel("Файл модели: не выбран")
+        self._train_save_label.setWordWrap(True)
+        self._btn_save_model_as = QPushButton("Сохранить модель как…")
+        self._btn_save_model_as.clicked.connect(self._choose_train_save_path)
+
+        self._btn_train = QPushButton("▶ ОБУЧИТЬ")
+        self._btn_train.setProperty("role", "train")
+        self._btn_train.clicked.connect(self._start_training)
+
+        lay.addWidget(self._train_dir_label)
+        lay.addWidget(self._btn_choose_train_dir)
+        lay.addWidget(self._train_save_label)
+        lay.addWidget(self._btn_save_model_as)
+        lay.addStretch()
+        lay.addWidget(self._btn_train)
         return frame
 
     def _build_center_panel(self) -> QFrame:
@@ -196,6 +261,11 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._score_value)
         lay.addWidget(self._time_value)
 
+        self._threshold_auto_check = QCheckBox("Автоматический порог (из модели)")
+        self._threshold_auto_check.setChecked(True)
+        self._threshold_auto_check.toggled.connect(self._on_auto_threshold_toggled)
+        lay.addWidget(self._threshold_auto_check)
+
         lay.addWidget(QLabel("Порог (нормированный, 0…1):"))
         self._threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self._threshold_slider.setMinimum(0)
@@ -203,10 +273,11 @@ class MainWindow(QMainWindow):
         self._threshold_slider.setSingleStep(1)
         self._threshold_slider.setPageStep(5)
         self._threshold_slider.setValue(50)
+        self._threshold_slider.setEnabled(False)
         self._threshold_slider.valueChanged.connect(self._on_threshold_changed)
         lay.addWidget(self._threshold_slider)
 
-        self._threshold_caption = QLabel("Порог: 0.50")
+        self._threshold_caption = QLabel("Порог: 0.50 (авто, из модели)")
         lay.addWidget(self._threshold_caption)
         lay.addStretch()
         return frame
@@ -244,13 +315,188 @@ class MainWindow(QMainWindow):
             QPushButton[role="start"]:hover { background-color: #218c48; }
             QPushButton[role="stop"] { background-color: #8b2020; color: white; font-weight: bold; border: 1px solid #a82e2e; }
             QPushButton[role="stop"]:hover { background-color: #a22828; }
+            QPushButton[role="train"] { background-color: #1e5a8a; color: white; font-weight: bold; border: 1px solid #2d7ab8; }
+            QPushButton[role="train"]:hover { background-color: #256ba5; }
             QComboBox { padding: 4px 8px; background-color: #3c3c44; border: 1px solid #555; border-radius: 4px; }
+            QTabWidget::pane { border: 1px solid #3f3f46; border-radius: 6px; background: #323238; }
+            QTabBar::tab { background: #3c3c44; padding: 8px 14px; margin-right: 2px; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+            QTabBar::tab:selected { background: #4a4a52; }
+            QCheckBox { spacing: 8px; }
+            QLabel[role="hint"] { color: #a0a0a8; font-size: 11px; }
             QSlider::groove:horizontal { height: 6px; background: #444; border-radius: 3px; }
             QSlider::handle:horizontal { width: 16px; margin: -5px 0; background: #6ba3d6; border-radius: 8px; }
             QTableWidget { gridline-color: #444; background-color: #252526; alternate-background-color: #2a2a2e; }
             QHeaderView::section { background-color: #3c3c44; padding: 4px; border: 1px solid #555; }
             """
         )
+
+    def _on_role_changed(self, index: int) -> None:
+        is_engineer = index == 1
+        self._left_tabs.tabBar().setVisible(is_engineer)
+        if not is_engineer:
+            self._left_tabs.setCurrentIndex(0)
+
+    def _effective_threshold_norm(self) -> float:
+        """Нормированный порог [0, 1] для сравнения с нормированным скором."""
+        if self._threshold_auto_check.isChecked():
+            return self._auto_threshold_norm
+        return self._threshold_slider.value() / 100.0
+
+    def _on_auto_threshold_toggled(self, checked: bool) -> None:
+        self._threshold_slider.setEnabled(not checked)
+        if checked:
+            self._threshold_slider.blockSignals(True)
+            self._threshold_slider.setValue(
+                max(0, min(100, int(round(self._auto_threshold_norm * 100))))
+            )
+            self._threshold_slider.blockSignals(False)
+            self._threshold_caption.setText(
+                f"Порог: {self._auto_threshold_norm:.2f} (авто, из модели)"
+            )
+        else:
+            t = self._threshold_slider.value() / 100.0
+            self._threshold_caption.setText(f"Порог: {t:.2f} (вручную)")
+        self._refresh_verdict()
+
+    def _set_training_locked(self, locked: bool) -> None:
+        """Блокирует UI на время обучения (кроме закрытия окна)."""
+        self._training_busy = locked
+        if locked:
+            self._role_combo.setEnabled(False)
+            self._btn_choose_model.setEnabled(False)
+            self._btn_choose_folder.setEnabled(False)
+            self._btn_choose_train_dir.setEnabled(False)
+            self._btn_save_model_as.setEnabled(False)
+            self._btn_train.setEnabled(False)
+            self._btn_start.setEnabled(False)
+            self._btn_stop.setEnabled(False)
+            self._mode_combo.setEnabled(False)
+            self._threshold_auto_check.setEnabled(False)
+            self._threshold_slider.setEnabled(False)
+        else:
+            self._role_combo.setEnabled(True)
+            self._btn_choose_model.setEnabled(True)
+            self._btn_choose_folder.setEnabled(True)
+            self._btn_choose_train_dir.setEnabled(True)
+            self._btn_save_model_as.setEnabled(True)
+            self._btn_train.setEnabled(True)
+            self._mode_combo.setEnabled(True)
+            self._threshold_auto_check.setEnabled(True)
+            self._threshold_slider.setEnabled(not self._threshold_auto_check.isChecked())
+            self._btn_stop.setEnabled(self._running)
+            self._btn_start.setEnabled(not self._running)
+
+    def _open_training_progress(self) -> None:
+        dlg = QProgressDialog(self)
+        dlg.setLabelText("Идёт обучение…")
+        dlg.setWindowTitle("Обучение PatchCore")
+        dlg.setRange(0, 0)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.show()
+        self._training_progress = dlg
+
+    def _close_training_progress(self) -> None:
+        if self._training_progress is not None:
+            self._training_progress.close()
+            self._training_progress.deleteLater()
+            self._training_progress = None
+
+    def _append_training_status_log(self) -> None:
+        self._log_table.insertRow(0)
+        items = [
+            QTableWidgetItem(datetime.now().strftime("%H:%M:%S")),
+            QTableWidgetItem("—"),
+            QTableWidgetItem("—"),
+            QTableWidgetItem("Идёт обучение…"),
+        ]
+        for col, it in enumerate(items):
+            it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._log_table.setItem(0, col, it)
+
+    def _choose_train_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self,
+            "Папка только с нормальными изображениями (без дефектов)",
+        )
+        if path:
+            self._train_image_dir = path
+            self._train_dir_label.setText(f"Папка НОРМЫ:\n{path}")
+
+    def _choose_train_save_path(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить обученную модель",
+            "",
+            "PyTorch (*.pt)",
+        )
+        if path:
+            if not path.lower().endswith(".pt"):
+                path += ".pt"
+            self._train_save_path = path
+            self._train_save_label.setText(f"Файл модели:\n{path}")
+
+    def _start_training(self) -> None:
+        if self._training_busy:
+            return
+        if self._running:
+            QMessageBox.warning(
+                self,
+                "Конвейер активен",
+                "Остановите конвейер перед запуском обучения.",
+            )
+            return
+        if not self._train_image_dir:
+            QMessageBox.warning(
+                self,
+                "Нет данных",
+                "Выберите папку с изображениями нормального класса.",
+            )
+            return
+        if not self._train_save_path:
+            QMessageBox.warning(self, "Нет пути", "Укажите файл для сохранения .pt.")
+            return
+        train_files = list_image_paths(self._train_image_dir)
+        if not train_files:
+            QMessageBox.warning(
+                self,
+                "Пустая папка",
+                "В выбранной папке нет поддерживаемых изображений.",
+            )
+            return
+
+        self._append_training_status_log()
+        self._set_training_locked(True)
+        self._open_training_progress()
+
+        device = select_device(self._device_pref)
+        self._training_worker = TrainingWorker(
+            self._train_image_dir,
+            self._train_save_path,
+            device,
+        )
+        self._training_worker.training_finished.connect(self._on_training_finished)
+        self._training_worker.training_failed.connect(self._on_training_failed)
+        self._training_worker.finished.connect(self._on_training_worker_finished)
+        self._training_worker.start()
+
+    def _on_training_finished(self) -> None:
+        self._close_training_progress()
+        self._set_training_locked(False)
+        QMessageBox.information(
+            self,
+            "Обучение завершено",
+            f"Модель успешно сохранена:\n{self._train_save_path}",
+        )
+
+    def _on_training_failed(self, message: str) -> None:
+        self._close_training_progress()
+        self._set_training_locked(False)
+        QMessageBox.critical(self, "Ошибка обучения", message)
+
+    def _on_training_worker_finished(self) -> None:
+        self._training_worker = None
 
     def _choose_model(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Выбор модели", "", "PyTorch (*.pt)")
@@ -266,6 +512,13 @@ class MainWindow(QMainWindow):
 
     def _start_conveyor(self) -> None:
         if self._running:
+            return
+        if self._training_busy:
+            QMessageBox.warning(
+                self,
+                "Обучение",
+                "Дождитесь завершения обучения перед запуском конвейера.",
+            )
             return
         if not self._model_path:
             QMessageBox.warning(self, "Нет модели", "Укажите файл весов .pt.")
@@ -310,11 +563,13 @@ class MainWindow(QMainWindow):
         self._score_min = score_min
         self._score_max = score_max
         nthr = normalize_score(threshold_raw, score_min, score_max)
-        v = int(round(nthr * 100))
-        self._threshold_slider.blockSignals(True)
-        self._threshold_slider.setValue(max(0, min(100, v)))
-        self._threshold_slider.blockSignals(False)
-        self._threshold_caption.setText(f"Порог: {nthr:.2f} (из модели)")
+        self._auto_threshold_norm = nthr
+        if self._threshold_auto_check.isChecked():
+            self._threshold_slider.blockSignals(True)
+            self._threshold_slider.setValue(max(0, min(100, int(round(nthr * 100)))))
+            self._threshold_slider.blockSignals(False)
+            self._threshold_caption.setText(f"Порог: {nthr:.2f} (авто, из модели)")
+        self._refresh_verdict()
 
     def _on_timer_tick(self) -> None:
         if not self._running or self._worker is None:
@@ -347,7 +602,7 @@ class MainWindow(QMainWindow):
         self._refresh_verdict()
         self._refresh_image_view()
 
-        thr = self._threshold_slider.value() / 100.0
+        thr = self._effective_threshold_norm()
         status = "БРАК" if norm_score > thr else "НОРМА"
         self._append_log_row(short_name, raw_score, status)
 
@@ -370,8 +625,10 @@ class MainWindow(QMainWindow):
         self._stop_conveyor()
 
     def _on_threshold_changed(self, _value: int) -> None:
+        if self._threshold_auto_check.isChecked():
+            return
         t = self._threshold_slider.value() / 100.0
-        self._threshold_caption.setText(f"Порог: {t:.2f}")
+        self._threshold_caption.setText(f"Порог: {t:.2f} (вручную)")
         self._refresh_verdict()
 
     def _refresh_verdict(self) -> None:
@@ -379,7 +636,7 @@ class MainWindow(QMainWindow):
             self._verdict_label.setText("—")
             self._verdict_label.setStyleSheet("background-color: #444; color: #aaa; border-radius: 6px;")
             return
-        thr = self._threshold_slider.value() / 100.0
+        thr = self._effective_threshold_norm()
         is_defect = self._last_norm_score > thr
         if is_defect:
             self._verdict_label.setText("БРАК")

@@ -112,6 +112,43 @@ class InferenceWorker(QThread):
             self.inference_failed.emit(self._model_path, str(exc))
 
 
+class TrainingWorker(QThread):
+    """
+    Полный цикл обучения PatchCore в фоновом потоке: fit → compute_score_range → save.
+
+    Папка ``train_image_dir`` должна содержать только изображения нормального класса
+    (эталоны без дефектов) — по ним строится банк памяти и статистика порога.
+    """
+
+    training_started = pyqtSignal()
+    training_finished = pyqtSignal()
+    training_failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        train_image_dir: str,
+        save_path: str,
+        device: str,
+        parent: Optional[QObject] = None,
+    ) -> None:
+        super().__init__(parent)
+        self._train_image_dir = train_image_dir
+        self._save_path = save_path
+        self._device = device
+
+    def run(self) -> None:
+        self.training_started.emit()
+        try:
+            model = PatchCore(device=self._device)
+            model.fit(self._train_image_dir)
+            model.compute_score_range(self._train_image_dir)
+            model.save(self._save_path)
+        except Exception as exc:  # noqa: BLE001
+            self.training_failed.emit(str(exc))
+        else:
+            self.training_finished.emit()
+
+
 def select_device(preference: str = "auto") -> str:
     """
     Возвращает строку устройства для PatchCore.
