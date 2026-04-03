@@ -57,3 +57,6 @@ priority = "explicit"
 #name = "pytorch-cpu"
 #url = "https://download.pytorch.org/whl/cpu"
 #priority = "explicit"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
