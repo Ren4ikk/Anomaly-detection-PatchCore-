@@ -24,8 +24,8 @@ matplotlib = "^3.10.8"
 optional = true
 
 [tool.poetry.group.torch-gpu.dependencies]
-torch = {version = "*", source = "pytorch-cu126"}
-torchvision = {version = "*", source = "pytorch-cu126"}
+torch = {version = "2.10.0+cu126", source = "pytorch-cu126"}
+torchvision = {version = "0.25.0+cu126", source = "pytorch-cu126"}
 
 # ── CPU-версия: только для CI ──
 #[tool.poetry.group.torch-cpu]
@@ -60,3 +60,6 @@ priority = "explicit"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+markers = [
+    "integration: marks tests as integration (deselect with '-m \"not integration\"')"
+]

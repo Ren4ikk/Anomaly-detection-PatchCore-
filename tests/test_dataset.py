@@ -112,9 +112,13 @@ class TestPatchCoreDataset:
         assert len(ds) == 6
 
     def test_non_recursive_collection(self, nested_image_dir: Path):
-        """Нерекурсивный режим не должен заходить в подпапки."""
-        ds = PatchCoreDataset(root=nested_image_dir, recursive=False)
-        assert len(ds) == 0  # все изображения в подпапках
+        """
+        Нерекурсивный режим не находит изображения в подпапках.
+        Все изображения лежат во вложенных директориях, поэтому
+        датасет бросает RuntimeError — корректное поведение конструктора.
+        """
+        with pytest.raises(RuntimeError, match="не найдено ни одного изображения"):
+            PatchCoreDataset(root=nested_image_dir, recursive=False)
 
     def test_nonexistent_dir_raises(self, tmp_path: Path):
         """Несуществующая директория должна вызывать ValueError."""
