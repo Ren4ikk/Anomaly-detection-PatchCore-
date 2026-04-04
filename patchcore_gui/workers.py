@@ -121,6 +121,8 @@ class TrainingWorker(QThread):
     """
 
     training_started = pyqtSignal()
+    # threshold, score_min, score_max (сырые значения с модели после compute_score_range)
+    training_success = pyqtSignal(float, float, float)
     training_finished = pyqtSignal()
     training_failed = pyqtSignal(str)
 
@@ -143,6 +145,10 @@ class TrainingWorker(QThread):
             model.fit(self._train_image_dir)
             model.compute_score_range(self._train_image_dir)
             model.save(self._save_path)
+            thr = float(model.threshold)
+            smin = float(model.score_min)
+            smax = float(model.score_max)
+            self.training_success.emit(thr, smin, smax)
         except Exception as exc:  # noqa: BLE001
             self.training_failed.emit(str(exc))
         else:

@@ -11,6 +11,7 @@ from typing import Optional
 
 import cv2
 import numpy as np
+import torch
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QFont, QPalette, QColor, QPixmap
 from PyQt6.QtWidgets import (
@@ -41,6 +42,7 @@ from patchcore_gui.utils import (
     numpy_rgb_to_qpixmap,
     scaled_pixmap,
 )
+from patchcore_gui.history_types import InferenceHistoryEntry
 from patchcore_gui.workers import InferenceWorker, TrainingWorker, normalize_score, select_device
 
 
@@ -61,6 +63,9 @@ class ScaledImageLabel(QLabel):
 
     def set_source_pixmap(self, pixmap: QPixmap) -> None:
         self._source = pixmap
+        if pixmap.isNull():
+            super().clear()
+            return
         self._apply_scale()
 
     def resizeEvent(self, event) -> None:  # noqa: ANN001
@@ -96,14 +101,16 @@ class MainWindow(QMainWindow):
         self._training_busy: bool = False
         self._score_min: float = 0.0
         self._score_max: float = 1.0
-        self._auto_threshold_norm: float = 0.5
+        self._model_auto_threshold_raw: float = 0.0
+
+        self._history: list[InferenceHistoryEntry] = []
+        self._current_history_idx: int = -1
 
         self._train_image_dir: str = ""
         self._train_save_path: str = ""
 
         self._last_path: str = ""
         self._last_raw_score: float = 0.0
-        self._last_norm_score: float = 0.0
         self._last_elapsed_ms: float = 0.0
         self._last_rgb: Optional[np.ndarray] = None
         self._last_map: Optional[np.ndarray] = None
@@ -234,6 +241,19 @@ class MainWindow(QMainWindow):
         self._image_view = ScaledImageLabel()
         lay.addWidget(self._image_view, stretch=1)
 
+        gal = QHBoxLayout()
+        self._btn_hist_prev = QPushButton("⬅️ Предыдущее")
+        self._btn_hist_next = QPushButton("Следующее ➡️")
+        self._btn_hist_prev.clicked.connect(self._on_history_prev)
+        self._btn_hist_next.clicked.connect(self._on_history_next)
+        self._gallery_label = QLabel("Нет результатов")
+        self._gallery_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gal.addWidget(self._btn_hist_prev)
+        gal.addWidget(self._gallery_label, stretch=1)
+        gal.addWidget(self._btn_hist_next)
+        self._update_gallery_buttons_state()
+        lay.addLayout(gal)
+
         row = QHBoxLayout()
         row.addWidget(QLabel("Режим:"))
         self._mode_combo = QComboBox()
@@ -266,7 +286,7 @@ class MainWindow(QMainWindow):
         self._threshold_auto_check.toggled.connect(self._on_auto_threshold_toggled)
         lay.addWidget(self._threshold_auto_check)
 
-        lay.addWidget(QLabel("Порог (нормированный, 0…1):"))
+        lay.addWidget(QLabel("Ручной порог (шкала score_min … score_max модели):"))
         self._threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self._threshold_slider.setMinimum(0)
         self._threshold_slider.setMaximum(100)
@@ -277,7 +297,7 @@ class MainWindow(QMainWindow):
         self._threshold_slider.valueChanged.connect(self._on_threshold_changed)
         lay.addWidget(self._threshold_slider)
 
-        self._threshold_caption = QLabel("Порог: 0.50 (авто, из модели)")
+        self._threshold_caption = QLabel("Порог: — (выберите модель .pt)")
         lay.addWidget(self._threshold_caption)
         lay.addStretch()
         return frame
@@ -336,26 +356,107 @@ class MainWindow(QMainWindow):
         if not is_engineer:
             self._left_tabs.setCurrentIndex(0)
 
-    def _effective_threshold_norm(self) -> float:
-        """Нормированный порог [0, 1] для сравнения с нормированным скором."""
+    def _current_threshold_raw(self) -> float:
+        """
+        Активный порог в сырой шкале скоров модели.
+
+        Авто: ``threshold`` из чекпоинта. Ручной: линейная интерполяция между
+        ``score_min`` и ``score_max`` по положению слайдера 0…100.
+        """
         if self._threshold_auto_check.isChecked():
-            return self._auto_threshold_norm
-        return self._threshold_slider.value() / 100.0
+            return float(self._model_auto_threshold_raw)
+        span = self._score_max - self._score_min
+        t = self._threshold_slider.value() / 100.0
+        return self._score_min + t * span
+
+    def _slider_pos_from_raw_threshold(self, raw_thr: float) -> int:
+        """Позиция слайдера 0…100, соответствующая сырому порогу (для отображения)."""
+        span = self._score_max - self._score_min
+        if span <= 1e-12:
+            return 50
+        pos = (raw_thr - self._score_min) / span
+        return int(round(float(np.clip(pos, 0.0, 1.0)) * 100.0))
+
+    def _sync_threshold_ui_from_metadata(self) -> None:
+        """Подпись и положение слайдера после чтения .pt / обучения / model_ready."""
+        if self._threshold_auto_check.isChecked():
+            self._threshold_slider.blockSignals(True)
+            self._threshold_slider.setValue(self._slider_pos_from_raw_threshold(self._model_auto_threshold_raw))
+            self._threshold_slider.blockSignals(False)
+            self._threshold_caption.setText(
+                f"Порог: {self._model_auto_threshold_raw:.4f} (авто, из модели)"
+            )
+        else:
+            self._refresh_threshold_caption_manual()
+        self._refresh_verdict()
+
+    def _refresh_threshold_caption_manual(self) -> None:
+        cur = self._current_threshold_raw()
+        self._threshold_caption.setText(f"Порог: {cur:.4f} (вручную)")
+
+    def _update_gallery_buttons_state(self) -> None:
+        n = len(self._history)
+        idx = self._current_history_idx
+        self._btn_hist_prev.setEnabled(n > 0 and idx > 0)
+        self._btn_hist_next.setEnabled(n > 0 and idx < n - 1)
+
+    def _update_gallery_label(self) -> None:
+        n = len(self._history)
+        if n == 0 or self._current_history_idx < 0:
+            self._gallery_label.setText("Нет результатов")
+            return
+        self._gallery_label.setText(
+            f"Изображение {self._current_history_idx + 1} из {n}"
+        )
+
+    def _apply_history_index(self) -> None:
+        """Подставляет текущую запись истории в поля отображения и перерисовывает UI."""
+        if not self._history or self._current_history_idx < 0:
+            self._last_path = ""
+            self._last_raw_score = 0.0
+            self._last_elapsed_ms = 0.0
+            self._last_rgb = None
+            self._last_map = None
+            self._score_value.setText("Score: —")
+            self._time_value.setText("Время: — мс")
+            self._update_gallery_label()
+            self._update_gallery_buttons_state()
+            self._refresh_verdict()
+            self._image_view.set_source_pixmap(QPixmap())
+            return
+
+        e = self._history[self._current_history_idx]
+        self._last_path = e.path
+        self._last_raw_score = e.raw_score
+        self._last_elapsed_ms = e.elapsed_ms
+        self._last_rgb = e.rgb
+        self._last_map = e.anomaly_map
+        norm = normalize_score(e.raw_score, self._score_min, self._score_max)
+        self._score_value.setText(
+            f"Score: {e.raw_score:.4f} (норм: {norm:.2f})"
+        )
+        self._time_value.setText(f"Время: {e.elapsed_ms:.0f} мс")
+        self._update_gallery_label()
+        self._update_gallery_buttons_state()
+        self._refresh_verdict()
+        self._refresh_image_view()
+
+    def _on_history_prev(self) -> None:
+        if self._current_history_idx > 0:
+            self._current_history_idx -= 1
+            self._apply_history_index()
+
+    def _on_history_next(self) -> None:
+        if self._current_history_idx < len(self._history) - 1:
+            self._current_history_idx += 1
+            self._apply_history_index()
 
     def _on_auto_threshold_toggled(self, checked: bool) -> None:
         self._threshold_slider.setEnabled(not checked)
         if checked:
-            self._threshold_slider.blockSignals(True)
-            self._threshold_slider.setValue(
-                max(0, min(100, int(round(self._auto_threshold_norm * 100))))
-            )
-            self._threshold_slider.blockSignals(False)
-            self._threshold_caption.setText(
-                f"Порог: {self._auto_threshold_norm:.2f} (авто, из модели)"
-            )
+            self._sync_threshold_ui_from_metadata()
         else:
-            t = self._threshold_slider.value() / 100.0
-            self._threshold_caption.setText(f"Порог: {t:.2f} (вручную)")
+            self._refresh_threshold_caption_manual()
         self._refresh_verdict()
 
     def _set_training_locked(self, locked: bool) -> None:
@@ -410,6 +511,18 @@ class MainWindow(QMainWindow):
             QTableWidgetItem("—"),
             QTableWidgetItem("—"),
             QTableWidgetItem("Идёт обучение…"),
+        ]
+        for col, it in enumerate(items):
+            it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._log_table.setItem(0, col, it)
+
+    def _append_training_success_log(self, threshold: float) -> None:
+        self._log_table.insertRow(0)
+        items = [
+            QTableWidgetItem(datetime.now().strftime("%H:%M:%S")),
+            QTableWidgetItem("ОБУЧЕНИЕ ЗАВЕРШЕНО"),
+            QTableWidgetItem(f"{threshold:.6f}"),
+            QTableWidgetItem("УСПЕХ"),
         ]
         for col, it in enumerate(items):
             it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -476,19 +589,27 @@ class MainWindow(QMainWindow):
             self._train_save_path,
             device,
         )
-        self._training_worker.training_finished.connect(self._on_training_finished)
+        self._training_worker.training_success.connect(self._on_training_success)
         self._training_worker.training_failed.connect(self._on_training_failed)
         self._training_worker.finished.connect(self._on_training_worker_finished)
         self._training_worker.start()
 
-    def _on_training_finished(self) -> None:
+    def _on_training_success(self, threshold: float, score_min: float, score_max: float) -> None:
         self._close_training_progress()
         self._set_training_locked(False)
+        self._model_auto_threshold_raw = float(threshold)
+        self._score_min = float(score_min)
+        self._score_max = float(score_max)
+        self._sync_threshold_ui_from_metadata()
         QMessageBox.information(
             self,
             "Обучение завершено",
-            f"Модель успешно сохранена:\n{self._train_save_path}",
+            f"Порог (threshold): {threshold:.6f}\n"
+            f"score_min: {score_min:.6f}\n"
+            f"score_max: {score_max:.6f}\n\n"
+            f"Файл: {self._train_save_path}",
         )
+        self._append_training_success_log(threshold)
 
     def _on_training_failed(self, message: str) -> None:
         self._close_training_progress()
@@ -500,9 +621,25 @@ class MainWindow(QMainWindow):
 
     def _choose_model(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Выбор модели", "", "PyTorch (*.pt)")
-        if path:
-            self._model_path = path
-            self._model_label.setText(f"Модель:\n{path}")
+        if not path:
+            return
+        try:
+            state = torch.load(path, map_location="cpu", weights_only=True)
+            if not isinstance(state, dict):
+                raise ValueError("Ожидался словарь состояния PatchCore.")
+            self._score_min = float(state.get("score_min", 0.0))
+            self._score_max = float(state.get("score_max", 1.0))
+            self._model_auto_threshold_raw = float(state.get("threshold", 0.5))
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(
+                self,
+                "Файл модели",
+                f"Не удалось прочитать метаданные:\n{path}\n\n{exc}",
+            )
+            return
+        self._model_path = path
+        self._model_label.setText(f"Модель:\n{path}")
+        self._sync_threshold_ui_from_metadata()
 
     def _choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Папка с изображениями")
@@ -533,6 +670,9 @@ class MainWindow(QMainWindow):
         self._image_paths = paths
         self._conveyor_index = 0
         self._processed_count = 0
+        self._history.clear()
+        self._current_history_idx = -1
+        self._apply_history_index()
 
         device = select_device(self._device_pref)
         self._worker = InferenceWorker(self._model_path, device)
@@ -560,16 +700,10 @@ class MainWindow(QMainWindow):
         self._worker = None
 
     def _on_model_ready(self, score_min: float, score_max: float, threshold_raw: float) -> None:
-        self._score_min = score_min
-        self._score_max = score_max
-        nthr = normalize_score(threshold_raw, score_min, score_max)
-        self._auto_threshold_norm = nthr
-        if self._threshold_auto_check.isChecked():
-            self._threshold_slider.blockSignals(True)
-            self._threshold_slider.setValue(max(0, min(100, int(round(nthr * 100)))))
-            self._threshold_slider.blockSignals(False)
-            self._threshold_caption.setText(f"Порог: {nthr:.2f} (авто, из модели)")
-        self._refresh_verdict()
+        self._score_min = float(score_min)
+        self._score_max = float(score_max)
+        self._model_auto_threshold_raw = float(threshold_raw)
+        self._sync_threshold_ui_from_metadata()
 
     def _on_timer_tick(self) -> None:
         if not self._running or self._worker is None:
@@ -590,20 +724,22 @@ class MainWindow(QMainWindow):
         anomaly_map: np.ndarray,
         elapsed_ms: float,
     ) -> None:
-        self._last_path = path
-        self._last_raw_score = raw_score
-        self._last_norm_score = norm_score
-        self._last_elapsed_ms = elapsed_ms
-        self._last_rgb = load_display_rgb_224(path)
-        self._last_map = np.asarray(anomaly_map, dtype=np.float32)
-        short_name = Path(path).name
-        self._score_value.setText(f"Score: {raw_score:.4f} (норм: {norm_score:.2f})")
-        self._time_value.setText(f"Время: {elapsed_ms:.0f} мс")
-        self._refresh_verdict()
-        self._refresh_image_view()
+        rgb = load_display_rgb_224(path)
+        amap = np.asarray(anomaly_map, dtype=np.float32)
+        entry = InferenceHistoryEntry(
+            path=path,
+            raw_score=float(raw_score),
+            rgb=np.copy(rgb),
+            anomaly_map=np.copy(amap),
+            elapsed_ms=float(elapsed_ms),
+        )
+        self._history.append(entry)
+        self._current_history_idx = len(self._history) - 1
+        self._apply_history_index()
 
-        thr = self._effective_threshold_norm()
-        status = "БРАК" if norm_score > thr else "НОРМА"
+        short_name = Path(path).name
+        thr = self._current_threshold_raw()
+        status = "БРАК" if raw_score >= thr else "НОРМА"
         self._append_log_row(short_name, raw_score, status)
 
         self._processed_count += 1
@@ -627,8 +763,7 @@ class MainWindow(QMainWindow):
     def _on_threshold_changed(self, _value: int) -> None:
         if self._threshold_auto_check.isChecked():
             return
-        t = self._threshold_slider.value() / 100.0
-        self._threshold_caption.setText(f"Порог: {t:.2f} (вручную)")
+        self._refresh_threshold_caption_manual()
         self._refresh_verdict()
 
     def _refresh_verdict(self) -> None:
@@ -636,8 +771,8 @@ class MainWindow(QMainWindow):
             self._verdict_label.setText("—")
             self._verdict_label.setStyleSheet("background-color: #444; color: #aaa; border-radius: 6px;")
             return
-        thr = self._effective_threshold_norm()
-        is_defect = self._last_norm_score > thr
+        thr = self._current_threshold_raw()
+        is_defect = self._last_raw_score >= thr
         if is_defect:
             self._verdict_label.setText("БРАК")
             self._verdict_label.setStyleSheet(
