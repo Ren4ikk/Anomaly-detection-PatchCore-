@@ -2,19 +2,8 @@
 Этап 4 — Поиск и Инференс: Индекс ближайших соседей.
 
 Класс NearestNeighborIndex — обёртка над FAISS IndexFlatL2,
-хранящая косет M_C и обеспечивающая быстрый поиск k ближайших
+хранящая корсет M_C и обеспечивающая быстрый поиск k ближайших
 соседей при инференсе.
-
-Математика (Section 3.3 статьи, формула 6):
-
-  m_test*, m* = argmax_{m_test ∈ P(x_test)} argmin_{m ∈ M} ‖m_test − m‖₂
-
-  s* = ‖m_test* − m*‖₂
-
-Ссылки:
-  Статья:             https://arxiv.org/pdf/2106.08265  (Section 3.3)
-  Реализация авторов: https://github.com/amazon-science/patchcore-inspection
-                      src/patchcore/common.py (FaissNN)
 """
 
 from __future__ import annotations
@@ -27,12 +16,9 @@ from numpy.typing import NDArray
 
 class NearestNeighborIndex:
     """
-    Хранит косет M_C и выполняет быстрый kNN-поиск через FAISS IndexFlatL2.
+    Хранит корсет M_C и выполняет быстрый kNN-поиск через FAISS IndexFlatL2.
 
     IndexFlatL2 — точный брутфорс L2-поиск без аппроксимаций.
-    Авторы используют его для корректного вычисления расстояний аномальности.
-    Для экстремальной скорости на очень больших банках можно использовать
-    IndexIVFPQ (аппроксимационный), но с потерей точности.
 
     Args:
         use_gpu: Переносить ли индекс на GPU (ускоряет на больших банках).
@@ -43,16 +29,14 @@ class NearestNeighborIndex:
         self._index: faiss.IndexFlatL2 | None = None
         self._memory_bank: torch.Tensor | None = None
 
-    # ──────────────────────────────────────────────────────────────────────────
     # Публичный API
-    # ──────────────────────────────────────────────────────────────────────────
 
     def fit(self, coreset: torch.Tensor) -> None:
         """
-        Строит FAISS-индекс из косета M_C.
+        Строит FAISS-индекс из корсета M_C.
 
         Args:
-            coreset: Матрица косета (N_coreset, D) — выход CoresetSampler.
+            coreset: Матрица корсета (N_coreset, D) — выход CoresetSampler.
         """
         # Сохраняем оригинальный тензор для возможного дальнейшего использования
         self._memory_bank = coreset.cpu()
@@ -101,7 +85,7 @@ class NearestNeighborIndex:
 
     @property
     def memory_bank(self) -> torch.Tensor:
-        """Возвращает сохранённый косет M_C."""
+        """Возвращает сохранённый корсет M_C."""
         if self._memory_bank is None:
             raise RuntimeError("Индекс пуст. Вызовите fit() сначала.")
         return self._memory_bank

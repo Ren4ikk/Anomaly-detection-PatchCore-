@@ -27,9 +27,9 @@ from patchcore.dataset import (
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # build_train_transform
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 class TestBuildTrainTransform:
     """Тесты функции build_train_transform()."""
@@ -58,7 +58,7 @@ class TestBuildTrainTransform:
     def test_normalization_range(self):
         """
         После нормализации значения должны быть примерно в [-3, 3].
-        Белое изображение (255) → высокое значение, чёрное (0) → низкое.
+        Белое изображение (255) - высокое значение, чёрное (0) - низкое.
         """
         transform = build_train_transform()
         white = Image.fromarray(np.full((300, 300, 3), 255, dtype=np.uint8))
@@ -82,9 +82,9 @@ class TestBuildTrainTransform:
         assert abs(float(result[0].mean()) - expected_ch0) < 0.02
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # PatchCoreDataset
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 class TestPatchCoreDataset:
     """Тесты класса PatchCoreDataset."""
@@ -131,7 +131,7 @@ class TestPatchCoreDataset:
             PatchCoreDataset(root=empty_dir)
 
     def test_non_image_files_ignored(self, non_image_dir: Path):
-        """Файлы без расширений изображений должны игнорироваться → RuntimeError."""
+        """Файлы без расширений изображений должны игнорироваться - RuntimeError."""
         with pytest.raises(RuntimeError):
             PatchCoreDataset(root=non_image_dir)
 
@@ -170,9 +170,9 @@ class TestPatchCoreDataset:
         assert sample.shape[0] == 3  # RGB, не RGBA
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # make_train_dataloader
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 class TestMakeTrainDataloader:
     """Тесты фабричной функции make_train_dataloader()."""
@@ -185,7 +185,7 @@ class TestMakeTrainDataloader:
             num_workers=0,
         )
         batch = next(iter(loader))
-        # Датасет содержит 5 изображений, batch_size=3 → первый батч = 3
+        # Датасет содержит 5 изображений, batch_size=3 - первый батч = 3
         assert batch.shape == (3, 3, _CROP_SIZE, _CROP_SIZE)
 
     def test_total_samples(self, train_image_dir: Path):

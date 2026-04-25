@@ -16,9 +16,9 @@ import pytest
 from patchcore.metrics import Metrics, MetricResults, _compute_pro
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # MetricResults
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 class TestMetricResults:
     """Тесты датакласса MetricResults."""
@@ -40,9 +40,9 @@ class TestMetricResults:
         assert "0.9500" in s
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # _compute_pro (внутренняя функция)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 class TestComputePRO:
     """Тесты функции _compute_pro."""
@@ -84,7 +84,7 @@ class TestComputePRO:
         assert pro > 0.8, f"PRO идеального предиктора = {pro:.3f}"
 
     def test_zero_predictor_gives_low_pro(self):
-        """Нулевые карты аномальности → PRO должен быть низким."""
+        """Нулевые карты аномальности - PRO должен быть низким."""
         _, masks = self._make_data()
         zero_maps = np.zeros_like(masks, dtype=np.float32)
         pro, _, _ = _compute_pro(zero_maps, masks, num_thresh=20)
@@ -112,21 +112,21 @@ class TestComputePRO:
         assert (pros >= 0).all() and (pros <= 1).all()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # Metrics.compute()
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 class TestMetricsCompute:
     """Тесты класса Metrics."""
 
     def test_perfect_image_auroc(self, perfect_detector_data):
-        """Идеальный детектор → image AUROC = 1.0."""
+        """Идеальный детектор - image AUROC = 1.0."""
         gt_labels, image_scores = perfect_detector_data
         results = Metrics().compute(image_scores=image_scores, gt_labels=gt_labels)
         assert abs(results.image_auroc - 1.0) < 1e-6
 
     def test_random_image_auroc_near_half(self, random_detector_data):
-        """Случайный детектор → image AUROC ≈ 0.5 (±0.15 для N=100)."""
+        """Случайный детектор - image AUROC ≈ 0.5 (±0.15 для N=100)."""
         gt_labels, image_scores = random_detector_data
         results = Metrics().compute(image_scores=image_scores, gt_labels=gt_labels)
         assert 0.35 <= results.image_auroc <= 0.65, (
@@ -200,7 +200,7 @@ class TestMetricsCompute:
         assert len(results.pixel_tpr) > 0
 
     def test_mismatched_anomaly_maps_and_masks_raises(self):
-        """anomaly_maps и gt_masks несовместимой формы → ValueError."""
+        """anomaly_maps и gt_masks несовместимой формы - ValueError."""
         gt_labels = np.array([0, 1], dtype=np.int32)
         image_scores = np.array([0.1, 0.9], dtype=np.float32)
         anomaly_maps = np.zeros((2, 16, 16), dtype=np.float32)

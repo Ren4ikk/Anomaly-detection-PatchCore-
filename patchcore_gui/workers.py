@@ -114,7 +114,7 @@ class InferenceWorker(QThread):
 
 class TrainingWorker(QThread):
     """
-    Полный цикл обучения PatchCore в фоновом потоке: fit → compute_score_range → save.
+    Полный цикл обучения PatchCore в фоновом потоке: fit - compute_score_range - save.
 
     Папка ``train_image_dir`` должна содержать только изображения нормального класса
     (эталоны без дефектов) — по ним строится банк памяти и статистика порога.

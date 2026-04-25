@@ -27,7 +27,7 @@ from PIL import Image
 from patchcore import PatchCore, build_train_transform
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def _get_device() -> torch.device:
     if torch.cuda.is_available():
@@ -83,7 +83,7 @@ def _save_results(
     anomaly_map_vis = anomaly_map_vis.clip(0.0, 1.0)
     # ---------------------------------------------------------
 
-    # Цветовая карта: синий (норма) → красный (аномалия)
+    # Цветовая карта: синий (норма) - красный (аномалия)
     colormap = cm.jet
     heatmap_rgba = colormap(anomaly_map_vis)  # (H, W, 4) float [0,1]
     heatmap_rgb = (heatmap_rgba[:, :, :3] * 255).astype(np.uint8)
@@ -95,7 +95,7 @@ def _save_results(
         alpha * heatmap_rgb.astype(np.float32)
     ).clip(0, 255).astype(np.uint8)
 
-    # ── Сохраняем heatmap ────────────────────────────────────────────────
+    # -- Сохраняем heatmap ------------------------------------------------
     heatmap_path = output_dir / f"{stem}_heatmap.png"
     fig, ax = plt.subplots(figsize=(5, 5))
     im = ax.imshow(anomaly_map_vis, cmap="jet", vmin=0, vmax=1)
@@ -106,11 +106,11 @@ def _save_results(
     fig.savefig(heatmap_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
-    # ── Сохраняем overlay ────────────────────────────────────────────────
+    # -- Сохраняем overlay ------------------------------------------------
     overlay_path = output_dir / f"{stem}_overlay.png"
     Image.fromarray(overlay).save(overlay_path)
 
-    # ── Сохраняем side-by-side comparison ────────────────────────────────
+    # -- Сохраняем side-by-side comparison --------------------------------
     comparison_path = output_dir / f"{stem}_comparison.png"
     is_anomaly = image_score >= threshold
     status = f"ANOMALY ({image_score:.4f})" if is_anomaly else f"NORMAL ({image_score:.4f})"
@@ -146,18 +146,18 @@ def _save_results(
     print(f"  Сравнение      : {comparison_path}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def main(args: argparse.Namespace) -> None:
 
     device = _get_device()
 
-    # ── Загрузка модели ───────────────────────────────────────────────────
+    # -- Загрузка модели ---------------------------------------------------
     print(f"\n[Infer] Загрузка модели: {args.model}")
     model = PatchCore(device=device)
     model.load(args.model)
 
-    # ── Загрузка изображения ──────────────────────────────────────────────
+    # -- Загрузка изображения ----------------------------------------------
     image_path = Path(args.image)
     if not image_path.exists():
         print(f"Ошибка: файл не найден — {image_path}")
@@ -174,7 +174,7 @@ def main(args: argparse.Namespace) -> None:
     # Препроцессинг для модели
     tensor = transform(pil_image).unsqueeze(0)  # (1, 3, 224, 224)
 
-    # ── Инференс ──────────────────────────────────────────────────────────
+    # -- Инференс ----------------------------------------------------------
     print("[Infer] Запуск инференса...")
     result = model.predict_single(tensor)
 
@@ -188,7 +188,7 @@ def main(args: argparse.Namespace) -> None:
     print(f"  Вердикт     : {verdict_sign} {verdict}")
     print(f"{'='*40}\n")
 
-    # ── Сохранение результатов ────────────────────────────────────────────
+    # -- Сохранение результатов --------------------------------------------
     output_dir = Path(args.output_dir)
     print(f"[Infer] Сохранение результатов в: {output_dir}")
 
@@ -206,7 +206,7 @@ def main(args: argparse.Namespace) -> None:
     print("\n[Infer] Готово.")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

@@ -19,7 +19,7 @@ scipy = ">=1.17.1,<2.0.0"
 scikit-learn = ">=1.8.0,<2.0.0"
 matplotlib = "^3.10.8"
 
-# ── GPU-версия: для локальной разработки ──
+# -- GPU-версия: для локальной разработки --
 [tool.poetry.group.torch-gpu]
 optional = true
 
@@ -27,7 +27,7 @@ optional = true
 torch = {version = "2.10.0+cu126", source = "pytorch-cu126"}
 torchvision = {version = "0.25.0+cu126", source = "pytorch-cu126"}
 
-# ── CPU-версия: только для CI ──
+# -- CPU-версия: только для CI --
 #[tool.poetry.group.torch-cpu]
 #optional = true
 #
@@ -35,7 +35,7 @@ torchvision = {version = "0.25.0+cu126", source = "pytorch-cu126"}
 #torch = {version = "*", source = "pytorch-cpu"}
 #torchvision = {version = "*", source = "pytorch-cpu"}
 
-# ── Dev: pytest и покрытие ──
+# -- Dev: pytest и покрытие --
 [tool.poetry.group.dev]
 optional = true
 
@@ -54,7 +54,7 @@ name = "pytorch-cu126"
 url = "https://download.pytorch.org/whl/cu126"
 priority = "explicit"
 
-# ── Новый источник: CPU-колесо для CI ──
+# -- Новый источник: CPU-колесо для CI --
 #[[tool.poetry.source]]
 #name = "pytorch-cpu"
 #url = "https://download.pytorch.org/whl/cpu"

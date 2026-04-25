@@ -31,7 +31,7 @@ import torch
 from PIL import Image
 
 
-# ─── проверка GPU ─────────────────────────────────────────────────────────────
+# --- проверка GPU -------------------------------------------------------------
 
 def _get_device() -> torch.device:
     if torch.cuda.is_available():
@@ -42,7 +42,7 @@ def _get_device() -> torch.device:
     return torch.device("cpu")
 
 
-# ─── загрузка тестового датасета с масками ────────────────────────────────────
+# --- загрузка тестового датасета с масками ------------------------------------
 
 def _load_test_data(
     test_dir: str,
@@ -106,7 +106,7 @@ def _load_test_data(
     return images, labels, masks, names
 
 
-# ─── основной пайплайн ────────────────────────────────────────────────────────
+# --- основной пайплайн --------------------------------------------------------
 
 def main(args: argparse.Namespace) -> None:
 
@@ -118,7 +118,7 @@ def main(args: argparse.Namespace) -> None:
     device = _get_device()
     transform = build_train_transform()
 
-    # ── Инициализация модели ──────────────────────────────────────────────────
+    # -- Инициализация модели --------------------------------------------------
     model = PatchCore(
         device=device,
         coreset_ratio=args.coreset_ratio,
@@ -127,7 +127,7 @@ def main(args: argparse.Namespace) -> None:
         use_gpu_faiss=False,   # faiss-cpu — FAISS на CPU
     )
 
-    # ── fit() или load() ─────────────────────────────────────────────────────
+    # -- fit() или load() -----------------------------------------------------
     if args.load_path:
         model.load(args.load_path)
     elif args.train_dir:
@@ -145,7 +145,7 @@ def main(args: argparse.Namespace) -> None:
         print("Ошибка: укажите --train_dir или --load_path")
         sys.exit(1)
 
-    # ── predict() ────────────────────────────────────────────────────────────
+    # -- predict() ------------------------------------------------------------
     if not args.test_dir:
         print("--test_dir не указан, инференс пропущен.")
         return
@@ -179,7 +179,7 @@ def main(args: argparse.Namespace) -> None:
 
     print(f"\n[Predict] Время инференса: {time.time() - t0:.1f}с")
 
-    # ── Метрики ───────────────────────────────────────────────────────────────
+    # -- Метрики ---------------------------------------------------------------
     gt_labels = np.array(labels, dtype=np.int32)
     scores_arr = np.array(image_scores, dtype=np.float32)
 
@@ -222,7 +222,7 @@ def main(args: argparse.Namespace) -> None:
             gt_labels=gt_labels,
         )
 
-    # ── Вывод результатов ─────────────────────────────────────────────────────
+    # -- Вывод результатов -----------------------------------------------------
     print("\n" + "=" * 45)
     print("РЕЗУЛЬТАТЫ")
     print("=" * 45)
@@ -247,7 +247,7 @@ def _print_scores(
         print(f"  {name:<45} {score:>8.4f}  {gt_str}")
 
 
-# ─── CLI ─────────────────────────────────────────────────────────────────────
+# --- CLI ---------------------------------------------------------------------
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -280,7 +280,7 @@ def _parse_args() -> argparse.Namespace:
     # Гиперпараметры
     parser.add_argument(
         "--coreset_ratio", type=float, default=0.1,
-        help="Доля патчей в косете (0.1 = PatchCore-10%%)"
+        help="Доля патчей в корсете (0.1 = PatchCore-10%%)"
     )
     parser.add_argument(
         "--batch_size", type=int, default=32,

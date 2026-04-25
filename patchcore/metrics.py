@@ -184,13 +184,13 @@ class Metrics:
 
         results = MetricResults()
 
-        # ── Image-level AUROC ──────────────────────────────────────
+        # -- Image-level AUROC --------------------------------------
         results.image_auroc = float(roc_auc_score(gt_labels, image_scores))
         image_fpr, image_tpr, _ = roc_curve(gt_labels, image_scores)
         results.image_fpr = image_fpr
         results.image_tpr = image_tpr
 
-        # ── Pixel-level AUROC и PRO ────────────────────────────────
+        # -- Pixel-level AUROC и PRO --------------------------------
         if anomaly_maps is not None and gt_masks is not None:
             anomaly_maps = np.asarray(anomaly_maps, dtype=np.float32)
             gt_masks = np.asarray(gt_masks, dtype=np.uint8)

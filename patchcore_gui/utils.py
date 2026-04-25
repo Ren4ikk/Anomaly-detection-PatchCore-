@@ -13,7 +13,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 
 
-# Расширения и размеры совпадают с patchcore.dataset (resize 256 → center crop 224).
+# Расширения и размеры совпадают с patchcore.dataset (resize 256 - center crop 224).
 _IMAGE_EXTENSIONS: frozenset[str] = frozenset(
     {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
 )

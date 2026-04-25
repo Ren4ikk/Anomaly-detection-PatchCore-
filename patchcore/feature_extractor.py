@@ -12,16 +12,6 @@ Section 3.1 оригинальной статьи (Roth et al., 2021):
           интерполяцией, затем карты конкатенируются по оси каналов.
   Шаг 5. Патч-признаки разворачиваются в матрицу
           (N_patches_total, C_combined) — готово для CoresetSampler.
-
-Соответствие оригинальному репозиторию:
-  NetworkFeatureAggregator  → хуки + forward backbone
-  PatchMaker.patchify       → unfold → локальная агрегация (MeanMapper)
-  Preprocessing             → интерполяция + конкатенация
-
-Ссылки:
-  Статья:             https://arxiv.org/pdf/2106.08265  (Section 3.1)
-  Реализация авторов: https://github.com/amazon-science/patchcore-inspection
-                      src/patchcore/common.py, src/patchcore/patchcore.py
 """
 
 from __future__ import annotations
@@ -34,51 +24,36 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import Wide_ResNet50_2_Weights, wide_resnet50_2
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Константы — соответствуют конфигурации запуска авторов (README.md):
-#   -le layer2 -le layer3 --patchsize 3 --pretrain_embed_dimension 1024
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Слои backbone, с которых снимаются признаки (j=2, j=3 из статьи).
+# Слои backbone, с которых снимаются признаки (j=2, j=3).
 # layer2: выход второго блока WideResNet, разрешение 28×28, 512 каналов.
 # layer3: выход третьего блока WideResNet, разрешение 14×14, 1024 канала.
 _LAYER2_NAME: str = "layer2"
 _LAYER3_NAME: str = "layer3"
 
-# Размер окрестности p для локальной агрегации (формула 1–2 статьи).
+# Размер окрестности p для локальной агрегации.
 # p=3 означает квадрат 3×3 вокруг каждой позиции (h, w).
 _PATCH_SIZE: int = 3
 
-# Шаг s при формировании патч-коллекции (формула 3 статьи).
-# Авторы фиксируют s=1, кроме ablation-экспериментов (Section 4.4.2).
+# Шаг s при формировании патч-коллекции.
 _STRIDE: int = 1
 
 # Целевая размерность каждого финального патч-вектора.
-# Авторы используют --pretrain_embed_dimension 1024 и --target_embed_dimension 1024.
-# layer2 (512) + layer3 (1024) = 1536 → после адаптивного пулинга → 1024.
+# layer2 (512) + layer3 (1024) = 1536 - после адаптивного пулинга - 1024.
 _TARGET_DIM: int = 1024
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Вспомогательный модуль: локальная агрегация одной карты признаков
-# ─────────────────────────────────────────────────────────────────────────────
-
 class _LocalAggregation(nn.Module):
     """
-    Реализует f_agg из формулы (2) статьи через Adaptive Average Pooling.
+    Реализует f_agg через Adaptive Average Pooling.
 
     Принцип работы:
       1. torch.Tensor.unfold разворачивает карту (B, C, H, W) в патчи:
          каждая позиция (h, w) получает окрестность p×p соседних векторов.
          Результат: (B, C, H_out, W_out, p, p)
       2. Reshape объединяет пространственные оси: (B*H_out*W_out, C, p, p)
-      3. AdaptiveAvgPool2d(1) усредняет p×p → одно значение на канал.
+      3. AdaptiveAvgPool2d(1) усредняет p×p - одно значение на канал.
          Это и есть f_agg = среднее по окрестности.
-      4. Reshape обратно: (B, H_out, W_out, C) → (B, C, H_out, W_out)
-
-    В оригинальном репозитории авторов этот шаг разбит на:
-      PatchMaker.patchify() + MeanMapper (adaptive_avg_pool2d → squeeze)
-    Мы объединяем их в один модуль для ясности.
+      4. Reshape обратно: (B, H_out, W_out, C) - (B, C, H_out, W_out)
 
     Args:
         patch_size: Размер окрестности p (нечётное число для симметрии).
@@ -89,8 +64,7 @@ class _LocalAggregation(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.stride = stride
-        # padding = p//2 гарантирует, что выходное разрешение совпадает
-        # со входным при stride=1 (сохраняем пространственную карту).
+        # padding = p//2 гарантирует, что выходное разрешение совпадает со входным при stride=1
         self.padding = patch_size // 2
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -108,19 +82,19 @@ class _LocalAggregation(nn.Module):
         s = self.stride
         pad = self.padding
 
-        # Шаг 1: padding → unfold по высоте и ширине
+        # Шаг 1: padding - unfold по высоте и ширине
         # F.pad добавляет симметричный padding нулями
         x_padded = F.pad(x, (pad, pad, pad, pad), mode="constant", value=0)
 
         # unfold(dimension, size, step):
-        #   по высоте: (B, C, H+2p, W+2p) → (B, C, H_out, W+2p, p)
-        #   по ширине: → (B, C, H_out, W_out, p, p)
+        #   по высоте: (B, C, H+2p, W+2p) - (B, C, H_out, W+2p, p)
+        #   по ширине: - (B, C, H_out, W_out, p, p)
         x_unf = x_padded.unfold(2, p, s).unfold(3, p, s)
         # x_unf: (B, C, H_out, W_out, p, p)
 
         H_out, W_out = x_unf.shape[2], x_unf.shape[3]
 
-        # Шаг 2: reshape → (B*H_out*W_out, C, p, p)
+        # Шаг 2: reshape - (B*H_out*W_out, C, p, p)
         # permute переставляет оси чтобы пространственные оси шли рядом
         x_patches = x_unf.permute(0, 2, 3, 1, 4, 5).contiguous()
         x_patches = x_patches.view(B * H_out * W_out, C, p, p)
@@ -137,30 +111,28 @@ class _LocalAggregation(nn.Module):
         return x_agg
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Основной класс
-# ─────────────────────────────────────────────────────────────────────────────
 
 class FeatureExtractor(nn.Module):
     """
     Извлекает локально агрегированные патч-признаки из WideResNet-50.
 
-    Полный pipeline (Section 3.1 статьи):
+    Полный pipeline:
 
       images (B, 3, 224, 224)
-          ↓  forward через WideResNet-50 (заморожен)
+            forward через WideResNet-50 (заморожен)
       layer2_features (B, 512, 28, 28)   ← j=2, высокое разрешение
       layer3_features (B, 1024, 14, 14)  ← j=3, широкий контекст
-          ↓  локальная агрегация _LocalAggregation (p=3, s=1)
+            локальная агрегация _LocalAggregation (p=3, s=1)
       layer2_agg (B, 512, 28, 28)        ← разрешение сохранено
       layer3_agg (B, 1024, 14, 14)       ← разрешение сохранено
-          ↓  билинейная интерполяция layer3 → размер layer2
+            билинейная интерполяция layer3 - размер layer2
       layer3_upsampled (B, 1024, 28, 28)
-          ↓  конкатенация по каналам
+            конкатенация по каналам
       combined (B, 1536, 28, 28)
-          ↓  AdaptiveAvgPool2d → target_dim каналов
+            AdaptiveAvgPool2d - target_dim каналов
       adapted (B, 1024, 28, 28)
-          ↓  reshape: патчи в строки матрицы
+            reshape: патчи в строки матрицы
       patch_features (B*784, 1024)        ← готово для CoresetSampler
 
     Args:
@@ -182,35 +154,25 @@ class FeatureExtractor(nn.Module):
         self.target_dim = target_dim
         self.device = torch.device(device)
 
-        # ── Backbone ──────────────────────────────────────────────────────────
-        # WideResNet-50 предобучен на ImageNet (IMAGENET1K_V1 — веса авторов).
-        # Все параметры заморожены: PatchCore не обучает backbone.
+        # -- Backbone ----------------------------------------------------------
         self.backbone = wide_resnet50_2(weights=Wide_ResNet50_2_Weights.IMAGENET1K_V1)
         self.backbone.eval()
         for param in self.backbone.parameters():
             param.requires_grad_(False)
         self.backbone.to(self.device)
 
-        # ── Локальная агрегация ───────────────────────────────────────────────
-        # Один и тот же модуль применяется к обоим слоям независимо.
+        # -- Локальная агрегация -----------------------------------------------
         self._local_agg = _LocalAggregation(patch_size=patch_size, stride=stride)
 
-        # ── Адаптация размерности ─────────────────────────────────────────────
-        # После конкатенации: 512 + 1024 = 1536 каналов.
-        # AdaptiveAvgPool1d сжимает каналы до target_dim.
-        # В оригинале это Aggregator: adaptive_avg_pool1d по оси каналов.
+        # -- Адаптация размерности ---------------------------------------------
         self._channel_adapter = nn.AdaptiveAvgPool1d(target_dim)
 
-        # ── Forward-хуки ─────────────────────────────────────────────────────
+        # -- Forward-хуки -----------------------------------------------------
         # Словарь для хранения выходов промежуточных слоёв.
         # Заполняется при каждом forward-проходе backbone.
         self._feature_cache: dict[str, torch.Tensor] = {}
         self._hook_handles: list[torch.utils.hooks.RemovableHook] = []
         self._register_hooks()
-
-    # ──────────────────────────────────────────────────────────────────────────
-    # Регистрация хуков
-    # ──────────────────────────────────────────────────────────────────────────
 
     def _register_hooks(self) -> None:
         """
@@ -249,10 +211,6 @@ class FeatureExtractor(nn.Module):
             handle.remove()
         self._hook_handles.clear()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Context manager для автоматической очистки хуков
-    # ──────────────────────────────────────────────────────────────────────────
-
     @contextmanager
     def feature_extraction_context(self) -> Generator[FeatureExtractor, None, None]:
         """
@@ -268,9 +226,6 @@ class FeatureExtractor(nn.Module):
         finally:
             self.remove_hooks()
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # Вспомогательные приватные методы
-    # ──────────────────────────────────────────────────────────────────────────
 
     def _run_backbone(self, images: torch.Tensor) -> None:
         """
@@ -289,7 +244,7 @@ class FeatureExtractor(nn.Module):
     def _aggregate(self, feat: torch.Tensor) -> torch.Tensor:
         """
         Применяет локальную агрегацию f_agg к карте признаков.
-        Формулы (1)–(3) статьи. Разрешение карты сохраняется.
+        Разрешение карты сохраняется.
         """
         return self._local_agg(feat)
 
@@ -301,10 +256,6 @@ class FeatureExtractor(nn.Module):
         """
         Приводит feat_low_res к пространственному размеру feat_high_res
         билинейной интерполяцией.
-
-        Статья: «we achieve [resolution matching] by bilinearly rescaling
-        P_{s,p}(φ_{i,j+1}) such that |P_{s,p}(φ_{i,j+1})| and
-        |P_{s,p}(φ_{i,j})| match» (Section 3.1).
 
         Args:
             feat_high_res: Тензор с целевым разрешением (B, C1, H, W).
@@ -328,14 +279,9 @@ class FeatureExtractor(nn.Module):
         Зачем нужен этот шаг:
             После конкатенации признаков layer2 (512 каналов) и layer3
             (1024 канала) получается тензор с 1536 каналами. Авторы используют
-            --target_embed_dimension 1024, поэтому нужно привести 1536 → 1024.
+            --target_embed_dimension 1024, поэтому нужно привести 1536 - 1024.
             AdaptiveAvgPool1d делает это усреднением групп соседних каналов —
             без обучаемых параметров, быстро.
-
-        Соответствие оригиналу:
-            В репозитории авторов это класс Aggregator (common.py):
-              adaptive_avg_pool1d(input.reshape(B, -1, C), target_dim)
-            где reshape объединяет B и H*W в одну ось.
 
         Трансформации формы по шагам (пример: B=32, H=W=28):
             Вход:                    (32, 1536, 28, 28)
@@ -362,9 +308,9 @@ class FeatureExtractor(nn.Module):
         B, C, H, W = feat.shape
 
         # Разворачиваем пространство в одну ось: (B*H*W, 1, C)
-        # AdaptiveAvgPool1d пулит по последней оси C: 1536 → 1024
+        # AdaptiveAvgPool1d пулит по последней оси C: 1536 - 1024
         feat_2d = feat.permute(0, 2, 3, 1).contiguous().reshape(B * H * W, 1, C)
-        # (B*H*W, 1, C) → (B*H*W, 1, target_dim)
+        # (B*H*W, 1, C) - (B*H*W, 1, target_dim)
         feat_adapted = self._channel_adapter(feat_2d)
         # Восстанавливаем пространственные оси
         feat_adapted = feat_adapted.reshape(B, H, W, self.target_dim)
@@ -375,21 +321,16 @@ class FeatureExtractor(nn.Module):
         """
         Разворачивает пространственную карту признаков в матрицу патчей.
 
-        (B, C, H, W) → (B*H*W, C)
+        (B, C, H, W) - (B*H*W, C)
 
         Каждая строка матрицы — один патч-вектор.
         Это финальный формат для CoresetSampler и NearestNeighborIndex.
-
-        Формула (4) статьи:
-          M = ⋃_{x_i ∈ X_N} P_{s,p}(φ_j(x_i))
         """
         B, C, H, W = feat.shape
-        # permute + reshape: (B, C, H, W) → (B, H, W, C) → (B*H*W, C)
+        # permute + reshape: (B, C, H, W) - (B, H, W, C) - (B*H*W, C)
         return feat.permute(0, 2, 3, 1).reshape(B * H * W, C)
 
-    # ──────────────────────────────────────────────────────────────────────────
     # Публичный API
-    # ──────────────────────────────────────────────────────────────────────────
 
     @torch.no_grad()
     def extract(self, images: torch.Tensor) -> torch.Tensor:
@@ -415,27 +356,27 @@ class FeatureExtractor(nn.Module):
 
         images = images.to(self.device)
 
-        # ── Шаг 1: прогон backbone, заполнение _feature_cache ─────────────
+        # -- Шаг 1: прогон backbone, заполнение _feature_cache -------------
         self._run_backbone(images)
 
         feat2: torch.Tensor = self._feature_cache[_LAYER2_NAME]  # (B, 512,  28, 28)
         feat3: torch.Tensor = self._feature_cache[_LAYER3_NAME]  # (B, 1024, 14, 14)
 
-        # ── Шаг 2: локальная агрегация (формулы 1–3) ──────────────────────
+        # -- Шаг 2: локальная агрегация (формулы 1–3) ----------------------
         feat2_agg = self._aggregate(feat2)  # (B, 512,  28, 28) — разрешение сохранено
         feat3_agg = self._aggregate(feat3)  # (B, 1024, 14, 14) — разрешение сохранено
 
-        # ── Шаг 3: выравнивание разрешений ────────────────────────────────
-        # layer3 (14×14) → layer2 (28×28) через билинейную интерполяцию
+        # -- Шаг 3: выравнивание разрешений --------------------------------
+        # layer3 (14×14) - layer2 (28×28) через билинейную интерполяцию
         feat3_up = self._align_resolutions(feat2_agg, feat3_agg)  # (B, 1024, 28, 28)
 
-        # ── Шаг 4: конкатенация по оси каналов ────────────────────────────
+        # -- Шаг 4: конкатенация по оси каналов ----------------------------
         combined = torch.cat([feat2_agg, feat3_up], dim=1)  # (B, 1536, 28, 28)
 
-        # ── Шаг 5: адаптация размерности каналов ──────────────────────────
+        # -- Шаг 5: адаптация размерности каналов --------------------------
         adapted = self._adapt_channels(combined)  # (B, 1024, 28, 28)
 
-        # ── Шаг 6: разворачивание в матрицу патчей ─────────────────────────
+        # -- Шаг 6: разворачивание в матрицу патчей -------------------------
         patch_features = self._to_patch_matrix(adapted)  # (B*784, 1024)
 
         return patch_features
@@ -449,7 +390,7 @@ class FeatureExtractor(nn.Module):
 
         Пространственный размер нужен при инференсе: чтобы перевести
         индексы строк матрицы обратно в (h, w) координаты для построения
-        карты аномальности (Segmentation Mask, Section 3.3 статьи).
+        карты аномальности.
 
         Returns:
             patch_features: (B * H_out * W_out, target_dim)

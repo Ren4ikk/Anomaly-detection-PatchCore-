@@ -3,7 +3,7 @@ tests/test_coreset_sampler.py — тесты для patchcore/coreset_sampler.py
 
 Покрываем:
   • _JohnsonLindenstrauss: форма проекции, изометрическое свойство (JL-лемма)
-  • CoresetSampler:        форма косета, ratio, детерминированность, крайние случаи
+  • CoresetSampler:        форма корсета, ratio, детерминированность, крайние случаи
   • _greedy_coreset_selection: алгоритмические свойства (уникальность, покрытие)
 """
 
@@ -23,15 +23,15 @@ from patchcore.coreset_sampler import (
 )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # _JohnsonLindenstrauss
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 class TestJohnsonLindenstrauss:
     """Тесты случайной проекции Джонсона–Линденштрауса."""
 
     def test_output_shape(self):
-        """Проекция (N, 1024) → (N, 128)."""
+        """Проекция (N, 1024) - (N, 128)."""
         jl = _JohnsonLindenstrauss(input_dim=1024, output_dim=128)
         x = np.random.randn(50, 1024).astype(np.float32)
         projected = jl.project(x)
@@ -45,14 +45,14 @@ class TestJohnsonLindenstrauss:
         assert projected.dtype == np.float32
 
     def test_deterministic_with_same_seed(self):
-        """Одинаковый seed → одинаковая матрица проекции."""
+        """Одинаковый seed - одинаковая матрица проекции."""
         jl1 = _JohnsonLindenstrauss(input_dim=32, output_dim=16, seed=42)
         jl2 = _JohnsonLindenstrauss(input_dim=32, output_dim=16, seed=42)
         x = np.random.randn(5, 32).astype(np.float32)
         assert np.allclose(jl1.project(x), jl2.project(x))
 
     def test_different_seeds_give_different_projections(self):
-        """Разные seeds → разные матрицы проекции."""
+        """Разные seeds - разные матрицы проекции."""
         jl1 = _JohnsonLindenstrauss(input_dim=32, output_dim=16, seed=1)
         jl2 = _JohnsonLindenstrauss(input_dim=32, output_dim=16, seed=2)
         x = np.random.randn(5, 32).astype(np.float32)
@@ -93,16 +93,16 @@ class TestJohnsonLindenstrauss:
         assert corr > 0.5, f"Корреляция расстояний JL = {corr:.3f} < 0.5"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # CoresetSampler
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 class TestCoresetSampler:
     """Тесты класса CoresetSampler."""
 
     def test_output_shape_with_ratio(self, small_feature_matrix: torch.Tensor):
         """
-        Для N=50 и ratio=0.2 → ceil(0.2 * 50) = 10 строк в косете.
+        Для N=50 и ratio=0.2 - ceil(0.2 * 50) = 10 строк в корсете.
         Число столбцов должно совпадать с исходным.
         """
         sampler = CoresetSampler(ratio=0.2, seed=0)
@@ -111,13 +111,13 @@ class TestCoresetSampler:
         assert coreset.shape == (expected_rows, small_feature_matrix.shape[1])
 
     def test_ratio_1_returns_all(self, small_feature_matrix: torch.Tensor):
-        """При ratio=1.0 косет == весь банк (возвращается как есть)."""
+        """При ratio=1.0 корсет == весь банк (возвращается как есть)."""
         sampler = CoresetSampler(ratio=1.0)
         coreset = sampler.sample(small_feature_matrix)
         assert coreset.shape[0] == len(small_feature_matrix)
 
     def test_ratio_very_small(self, small_feature_matrix: torch.Tensor):
-        """При очень маленьком ratio размер косета ≥ 1."""
+        """При очень маленьком ratio размер корсета ≥ 1."""
         sampler = CoresetSampler(ratio=0.001, seed=0)
         coreset = sampler.sample(small_feature_matrix)
         assert coreset.shape[0] >= 1
@@ -132,21 +132,21 @@ class TestCoresetSampler:
             CoresetSampler(ratio=-0.1)
 
     def test_output_dtype(self, small_feature_matrix: torch.Tensor):
-        """Тип данных косета должен совпадать с входным тензором (float32)."""
+        """Тип данных корсета должен совпадать с входным тензором (float32)."""
         sampler = CoresetSampler(ratio=0.4, seed=0)
         coreset = sampler.sample(small_feature_matrix)
         assert coreset.dtype == small_feature_matrix.dtype
 
     def test_deterministic_with_same_seed(self, small_feature_matrix: torch.Tensor):
-        """Одинаковый seed → одинаковый косет."""
+        """Одинаковый seed - одинаковый корсет."""
         s1 = CoresetSampler(ratio=0.3, seed=42)
         s2 = CoresetSampler(ratio=0.3, seed=42)
         c1 = s1.sample(small_feature_matrix)
         c2 = s2.sample(small_feature_matrix)
-        assert torch.allclose(c1, c2), "Косеты с одинаковым seed различаются"
+        assert torch.allclose(c1, c2), "Корсеты с одинаковым seed различаются"
 
     def test_different_seeds_may_differ(self, small_feature_matrix: torch.Tensor):
-        """Разные seeds должны давать разные косеты (с высокой вероятностью)."""
+        """Разные seeds должны давать разные корсеты (с высокой вероятностью)."""
         s1 = CoresetSampler(ratio=0.3, seed=1)
         s2 = CoresetSampler(ratio=0.3, seed=2)
         c1 = s1.sample(small_feature_matrix)
@@ -156,7 +156,7 @@ class TestCoresetSampler:
 
     def test_coreset_rows_are_subset_of_original(self, small_feature_matrix: torch.Tensor):
         """
-        Каждая строка косета должна присутствовать в исходной матрице.
+        Каждая строка корсета должна присутствовать в исходной матрице.
         (Алгоритм выбирает, а не генерирует новые векторы.)
         """
         sampler = CoresetSampler(ratio=0.3, seed=0)
@@ -167,7 +167,7 @@ class TestCoresetSampler:
 
         for row in core_np:
             diffs = np.abs(orig_np - row).sum(axis=1)
-            assert diffs.min() < 1e-5, "Строка косета не найдена в исходных данных"
+            assert diffs.min() < 1e-5, "Строка корсета не найдена в исходных данных"
 
     def test_coreset_no_duplicate_rows(self, small_feature_matrix: torch.Tensor):
         """
@@ -183,7 +183,7 @@ class TestCoresetSampler:
         for i in range(len(core_np)):
             for j in range(i + 1, len(core_np)):
                 diff = np.abs(core_np[i] - core_np[j]).sum()
-                assert diff > 1e-6, f"Строки {i} и {j} в косете совпадают"
+                assert diff > 1e-6, f"Строки {i} и {j} в корсете совпадают"
 
     def test_expected_coreset_size(self):
         """expected_coreset_size() должен возвращать ceil(ratio * N)."""
@@ -205,6 +205,6 @@ class TestCoresetSampler:
         """
         torch.manual_seed(5)
         features = torch.randn(1000, 64)
-        sampler = CoresetSampler(ratio=0.05, seed=0)  # → 50 точек
+        sampler = CoresetSampler(ratio=0.05, seed=0)  # - 50 точек
         coreset = sampler.sample(features)
         assert coreset.shape == (50, 64)
