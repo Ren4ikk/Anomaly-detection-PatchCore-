@@ -68,10 +68,19 @@ def anomaly_map_to_bgr_heatmap(
     score_max: float | None = None,
 ) -> np.ndarray:
     """
-    Преобразует карту [0, 1] в цветную тепловую карту (BGR, uint8) через OpenCV JET.
+    Преобразует карту сырых L2-расстояний в цветную тепловую карту (BGR, uint8) через OpenCV JET.
+
+    Нормализация выполняется по глобальным границам score_min/score_max из модели,
+    что обеспечивает сравнимость карт между изображениями:
+    нормальные кадры (низкие значения) -> синий, аномальные -> красный.
+
+    Если границы не переданы или некорректны - используется локальный min/max карты
+    (fallback: карты визуально красивы, но не сравнимы между собой).
 
     Args:
-        anomaly_map: Двумерный массив значений в [0, 1].
+        anomaly_map: Двумерный массив сырых L2-расстояний (H, W).
+        score_min:   Нижняя граница шкалы (из model.score_min).
+        score_max:   Верхняя граница шкалы (из model.score_max).
 
     Returns:
         Массив (H, W, 3) BGR uint8.
@@ -81,6 +90,14 @@ def anomaly_map_to_bgr_heatmap(
     m = np.asarray(anomaly_map, dtype=np.float32)
     if score_min is not None and score_max is not None and score_max > score_min:
         m = (m - float(score_min)) / float(score_max - score_min)
+    else:
+        # Fallback: нормализация по локальному min/max.
+        # Защита от сплошного красного когда сырые значения >>1 и clip(0,1) даёт 1.0.
+        lo, hi = float(m.min()), float(m.max())
+        if hi > lo:
+            m = (m - lo) / (hi - lo)
+        else:
+            m = np.zeros_like(m)
     m = np.clip(m, 0.0, 1.0)
     gray = (m * 255.0).astype(np.uint8)
     heat_bgr = cv2.applyColorMap(gray, cv2.COLORMAP_JET)

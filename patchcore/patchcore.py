@@ -205,7 +205,7 @@ class PatchCore:
                        Правило 3σ: покрывает 99.7% нормального распределения,
                        всё что выше — статистически аномально.
 
-          score_min  — всегда 0.0 (L2-расстояния неотрицательны).
+          score_min  — минимальный max-пиксель карты по train-изображениям.
 
         Вызывать ПОСЛЕ fit(). Все значения сохраняются в файл модели через save().
 
@@ -236,11 +236,14 @@ class PatchCore:
         scores_arr    = np.array(all_image_scores, dtype=np.float32)
         map_maxes_arr = np.array(all_map_maxes,   dtype=np.float32)
 
-        # -- score_max (для визуализации карты) -------------------------------
-        # Берём максимальный map_max среди всех train-изображений.
-        # Это честная верхняя граница нормального класса — любое значение
-        # выше неё на карте гарантированно аномально относительно train.
-        self.score_min = 0.0
+        # -- score_min / score_max (для визуализации карты) -------------------
+        # score_min — реальный минимум сырых L2-расстояний по train-картам.
+        # Нельзя использовать 0.0: L2-расстояния никогда не бывают близки
+        # к нулю (нормальные значения ~4–12), поэтому фиксированный 0.0
+        # смещает всю шкалу вверх и нормальные кадры выглядят оранжевыми.
+        # score_max — максимальный пиксель карты среди всех train-изображений:
+        # это честная верхняя граница нормального класса.
+        self.score_min = float(np.min(map_maxes_arr))
         self.score_max = float(np.max(map_maxes_arr))
 
         # -- threshold (для вердикта НОРМА/АНОМАЛИЯ) --------------------------
@@ -394,11 +397,14 @@ class PatchCore:
         # Вставляем наш готовый s_star на 0-ю позицию.
         all_distances = np.insert(distances_to_neighbors, 0, s_star)
 
-        # 6. Вычисляем Softmax (перевзвешивание)
-        exp_dists = np.exp(all_distances - all_distances.max())
+        # 6. Вычисляем weight по Формуле 7 из статьи:
+        #    w(m_test*) = 1 - exp(s*) / sum_j exp(d_j)
+        #    где сумма идёт по всем b+1 расстояниям (включая s* на позиции 0).
+        #    Знаменатель — полная сумма, а не сумма без числителя.
+        exp_dists = np.exp(all_distances - all_distances.max())  # стабильный softmax
 
-        numerator = exp_dists[0]  # Это в точности exp(s*)
-        denominator = exp_dists.sum() - numerator  # нужно ли вычитать numerator?
+        numerator = exp_dists[0]      # exp(s*)
+        denominator = exp_dists.sum() # сумма по всем b+1 элементам
 
         weight = 1.0 - (numerator / denominator)
 
