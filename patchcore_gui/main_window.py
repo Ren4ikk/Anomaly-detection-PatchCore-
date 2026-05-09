@@ -820,14 +820,22 @@ class MainWindow(QMainWindow):
         m = self._last_map
         if rgb is None or m is None:
             return numpy_rgb_to_qpixmap(np.zeros((224, 224, 3), dtype=np.uint8))
-        heat_bgr = anomaly_map_to_bgr_heatmap(m)
+        # Для визуализации не даём диапазону схлопнуться ниже порога:
+        # иначе даже "нормальные" кадры быстро насыщаются в красный.
+        vis_max = max(float(self._score_max), float(self._model_auto_threshold_raw))
+        heat_bgr = anomaly_map_to_bgr_heatmap(m, self._score_min, vis_max)
         if mode == ViewMode.ORIGINAL:
             out = rgb
         elif mode == ViewMode.HEATMAP:
             heat_rgb = cv2.cvtColor(heat_bgr, cv2.COLOR_BGR2RGB)
             out = heat_rgb
         else:
-            out = blend_rgb_with_heat_bgr(rgb, heat_bgr, alpha=0.45)
+            span = vis_max - float(self._score_min)
+            if span > 1e-12:
+                intensity = np.clip((m - float(self._score_min)) / span, 0.0, 1.0)
+            else:
+                intensity = np.zeros_like(m, dtype=np.float32)
+            out = blend_rgb_with_heat_bgr(rgb, heat_bgr, alpha=0.55, intensity_map=intensity)
         return numpy_rgb_to_qpixmap(out)
 
     def _on_mode_changed(self, _index: int) -> None:

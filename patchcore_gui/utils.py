@@ -62,7 +62,11 @@ def load_display_rgb_224(image_path: str) -> np.ndarray:
     return np.asarray(pil, dtype=np.uint8)
 
 
-def anomaly_map_to_bgr_heatmap(anomaly_map: np.ndarray) -> np.ndarray:
+def anomaly_map_to_bgr_heatmap(
+    anomaly_map: np.ndarray,
+    score_min: float | None = None,
+    score_max: float | None = None,
+) -> np.ndarray:
     """
     Преобразует карту [0, 1] в цветную тепловую карту (BGR, uint8) через OpenCV JET.
 
@@ -75,6 +79,8 @@ def anomaly_map_to_bgr_heatmap(anomaly_map: np.ndarray) -> np.ndarray:
     import cv2
 
     m = np.asarray(anomaly_map, dtype=np.float32)
+    if score_min is not None and score_max is not None and score_max > score_min:
+        m = (m - float(score_min)) / float(score_max - score_min)
     m = np.clip(m, 0.0, 1.0)
     gray = (m * 255.0).astype(np.uint8)
     heat_bgr = cv2.applyColorMap(gray, cv2.COLORMAP_JET)
@@ -85,6 +91,7 @@ def blend_rgb_with_heat_bgr(
     rgb_uint8: np.ndarray,
     heat_bgr_uint8: np.ndarray,
     alpha: float = 0.45,
+    intensity_map: np.ndarray | None = None,
 ) -> np.ndarray:
     """
     Смешивает RGB-оригинал с тепловой картой (BGR) в RGB uint8.
@@ -103,7 +110,15 @@ def blend_rgb_with_heat_bgr(
     heat_rgb = cv2.cvtColor(heat_bgr_uint8, cv2.COLOR_BGR2RGB)
     base = rgb_uint8.astype(np.float32)
     over = heat_rgb.astype(np.float32)
-    out = (1.0 - a) * base + a * over
+    if intensity_map is None:
+        out = (1.0 - a) * base + a * over
+    else:
+        # Снижаем вклад overlay на "холодных" участках, чтобы нормальные кадры
+        # оставались визуально ближе к оригиналу.
+        w = np.asarray(intensity_map, dtype=np.float32)
+        w = np.clip(w, 0.0, 1.0)
+        a_map = (a * w)[..., None]
+        out = (1.0 - a_map) * base + a_map * over
     return np.clip(np.round(out), 0, 255).astype(np.uint8)
 
 
