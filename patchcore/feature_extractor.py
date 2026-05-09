@@ -22,13 +22,10 @@ from typing import Generator
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.models import Wide_ResNet50_2_Weights, wide_resnet50_2
+import torchvision.models as tv_models
 
-# Слои backbone, с которых снимаются признаки (j=2, j=3).
-# layer2: выход второго блока WideResNet, разрешение 28×28, 512 каналов.
-# layer3: выход третьего блока WideResNet, разрешение 14×14, 1024 канала.
-_LAYER2_NAME: str = "layer2"
-_LAYER3_NAME: str = "layer3"
+_DEFAULT_BACKBONE: str = "wide_resnet50_2"
+_DEFAULT_LAYERS: tuple[str, ...] = ("layer2", "layer3")
 
 # Размер окрестности p для локальной агрегации.
 # p=3 означает квадрат 3×3 вокруг каждой позиции (h, w).
@@ -147,15 +144,24 @@ class FeatureExtractor(nn.Module):
         target_dim: int = _TARGET_DIM,
         patch_size: int = _PATCH_SIZE,
         stride: int = _STRIDE,
+        backbone_name: str = _DEFAULT_BACKBONE,
+        layers: tuple[str, ...] = _DEFAULT_LAYERS,
         device: str | torch.device = "cpu",
     ) -> None:
         super().__init__()
 
         self.target_dim = target_dim
         self.device = torch.device(device)
+        self.backbone_name = backbone_name
+        self.layers = tuple(layers)
+        if len(self.layers) == 0:
+            raise ValueError("layers не может быть пустым. Укажите минимум один слой.")
 
         # -- Backbone ----------------------------------------------------------
-        self.backbone = wide_resnet50_2(weights=Wide_ResNet50_2_Weights.IMAGENET1K_V1)
+        backbone_factory = tv_models.__dict__.get(self.backbone_name)
+        if backbone_factory is None:
+            raise ValueError(f"Неизвестный backbone: {self.backbone_name}")
+        self.backbone = backbone_factory(weights="DEFAULT")
         self.backbone.eval()
         for param in self.backbone.parameters():
             param.requires_grad_(False)
@@ -185,9 +191,14 @@ class FeatureExtractor(nn.Module):
         Используем register_forward_hook вместо прямого вызова подмодулей,
         чтобы не разрывать граф вычислений backbone и не дублировать forward.
         """
-        for layer_name in (_LAYER2_NAME, _LAYER3_NAME):
+        for layer_name in self.layers:
             # Получаем подмодуль по строковому имени
-            layer: nn.Module = dict(self.backbone.named_children())[layer_name]
+            named_children = dict(self.backbone.named_children())
+            if layer_name not in named_children:
+                raise ValueError(
+                    f"Слой '{layer_name}' не найден в backbone '{self.backbone_name}'."
+                )
+            layer: nn.Module = named_children[layer_name]
 
             # Замыкание захватывает layer_name для правильного ключа в словаре
             def make_hook(name: str):
@@ -359,19 +370,25 @@ class FeatureExtractor(nn.Module):
         # -- Шаг 1: прогон backbone, заполнение _feature_cache -------------
         self._run_backbone(images)
 
-        feat2: torch.Tensor = self._feature_cache[_LAYER2_NAME]  # (B, 512,  28, 28)
-        feat3: torch.Tensor = self._feature_cache[_LAYER3_NAME]  # (B, 1024, 14, 14)
+        aggregated_features: list[torch.Tensor] = []
+        for layer_name in self.layers:
+            if layer_name not in self._feature_cache:
+                raise RuntimeError(f"Не удалось получить признаки слоя: {layer_name}")
+            aggregated_features.append(self._aggregate(self._feature_cache[layer_name]))
 
-        # -- Шаг 2: локальная агрегация (формулы 1–3) ----------------------
-        feat2_agg = self._aggregate(feat2)  # (B, 512,  28, 28) — разрешение сохранено
-        feat3_agg = self._aggregate(feat3)  # (B, 1024, 14, 14) — разрешение сохранено
-
-        # -- Шаг 3: выравнивание разрешений --------------------------------
-        # layer3 (14×14) - layer2 (28×28) через билинейную интерполяцию
-        feat3_up = self._align_resolutions(feat2_agg, feat3_agg)  # (B, 1024, 28, 28)
+        # Приводим все карты к наибольшему пространственному разрешению.
+        max_idx = max(
+            range(len(aggregated_features)),
+            key=lambda i: aggregated_features[i].shape[2] * aggregated_features[i].shape[3],
+        )
+        reference = aggregated_features[max_idx]
+        aligned_features = [
+            feat if feat.shape[2:] == reference.shape[2:] else self._align_resolutions(reference, feat)
+            for feat in aggregated_features
+        ]
 
         # -- Шаг 4: конкатенация по оси каналов ----------------------------
-        combined = torch.cat([feat2_agg, feat3_up], dim=1)  # (B, 1536, 28, 28)
+        combined = torch.cat(aligned_features, dim=1)
 
         # -- Шаг 5: адаптация размерности каналов --------------------------
         adapted = self._adapt_channels(combined)  # (B, 1024, 28, 28)
@@ -399,13 +416,22 @@ class FeatureExtractor(nn.Module):
         images = images.to(self.device)
         self._run_backbone(images)
 
-        feat2 = self._feature_cache[_LAYER2_NAME]
-        feat3 = self._feature_cache[_LAYER3_NAME]
+        aggregated_features: list[torch.Tensor] = []
+        for layer_name in self.layers:
+            if layer_name not in self._feature_cache:
+                raise RuntimeError(f"Не удалось получить признаки слоя: {layer_name}")
+            aggregated_features.append(self._aggregate(self._feature_cache[layer_name]))
 
-        feat2_agg = self._aggregate(feat2)
-        feat3_agg = self._aggregate(feat3)
-        feat3_up = self._align_resolutions(feat2_agg, feat3_agg)
-        combined = torch.cat([feat2_agg, feat3_up], dim=1)
+        max_idx = max(
+            range(len(aggregated_features)),
+            key=lambda i: aggregated_features[i].shape[2] * aggregated_features[i].shape[3],
+        )
+        reference = aggregated_features[max_idx]
+        aligned_features = [
+            feat if feat.shape[2:] == reference.shape[2:] else self._align_resolutions(reference, feat)
+            for feat in aggregated_features
+        ]
+        combined = torch.cat(aligned_features, dim=1)
         adapted = self._adapt_channels(combined)
 
         spatial_size = (adapted.shape[2], adapted.shape[3])  # (H_out, W_out)
@@ -416,8 +442,8 @@ class FeatureExtractor(nn.Module):
     def __repr__(self) -> str:
         return (
             f"{self.__class__.__name__}("
-            f"backbone=WideResNet50, "
-            f"layers=[{_LAYER2_NAME}, {_LAYER3_NAME}], "
+            f"backbone={self.backbone_name}, "
+            f"layers={list(self.layers)}, "
             f"patch_size={self._local_agg.patch_size}, "
             f"stride={self._local_agg.stride}, "
             f"target_dim={self.target_dim}, "

@@ -34,6 +34,9 @@ _REWEIGHTING_NEIGHBOURS: int = 9
 
 # σ для финального гауссова сглаживания карты аномальности.
 _GAUSSIAN_SIGMA: float = 4.0
+_DEFAULT_BACKBONE: str = "wide_resnet50_2"
+_DEFAULT_LAYERS: tuple[str, ...] = ("layer2", "layer3")
+_DEFAULT_PATCH_SIZE: int = 3
 
 # Размер выходной карты аномальности (соответствует входному изображению).
 _OUTPUT_SIZE: int = 224
@@ -96,15 +99,26 @@ class PatchCore:
         use_gpu_faiss: bool = False,
         n_reweight_nn: int = _REWEIGHTING_NEIGHBOURS,
         gaussian_sigma: float = _GAUSSIAN_SIGMA,
+        backbone_name: str = _DEFAULT_BACKBONE,
+        layers: tuple[str, ...] = _DEFAULT_LAYERS,
+        patch_size: int = _DEFAULT_PATCH_SIZE,
     ) -> None:
         self.device = torch.device(device)
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.n_reweight_nn = n_reweight_nn
         self.gaussian_sigma = gaussian_sigma
+        self.backbone_name = backbone_name
+        self.layers = tuple(layers)
+        self.patch_size = patch_size
 
         # Компоненты пайплайна
-        self.feature_extractor = FeatureExtractor(device=device)
+        self.feature_extractor = FeatureExtractor(
+            device=device,
+            backbone_name=self.backbone_name,
+            layers=self.layers,
+            patch_size=self.patch_size,
+        )
         self.coreset_sampler = CoresetSampler(ratio=coreset_ratio, use_gpu=use_gpu_faiss)
         self.nn_index = NearestNeighborIndex(use_gpu=use_gpu_faiss)
 
@@ -355,8 +369,10 @@ class PatchCore:
         """
         Строгая реализация Формулы 7 из оригинальной статьи PatchCore.
         """
+        target_device = m_test_star.device
+
         # 1. Получаем вектор эталона m*
-        m_star = self.nn_index.memory_bank[m_star_idx].unsqueeze(0)  # (1, D)
+        m_star = self.nn_index.memory_bank[m_star_idx].unsqueeze(0).to(target_device)  # (1, D)
 
         # 2. Ищем k=10 точек (Сам m* + 9 его ближайших соседей)
         k_search = self.n_reweight_nn + 1
@@ -367,12 +383,12 @@ class PatchCore:
         neighbor_indices = nb_indices[0][1:]
 
         # Извлекаем векторы соседей из банка (n_reweight_nn, D)
-        neighbors = self.nn_index.memory_bank[neighbor_indices]
+        neighbors = self.nn_index.memory_bank[neighbor_indices].to(target_device)
 
         # 4. Считаем расстояния только от ТЕСТОВОГО патча до СОСЕДЕЙ
         distances_to_neighbors = torch.linalg.norm(
             neighbors - m_test_star.unsqueeze(0), dim=1
-        ).numpy()
+        ).detach().cpu().numpy()
 
         # 5. Собираем все расстояния для знаменателя Формулы 7.
         # Вставляем наш готовый s_star на 0-ю позицию.
@@ -460,6 +476,9 @@ class PatchCore:
             "score_min": self.score_min,
             "score_max": self.score_max,
             "threshold": self.threshold,
+            "backbone_name": self.backbone_name,
+            "layers": self.layers,
+            "patch_size": self.patch_size,
         }
         torch.save(state, path)
         print(f"[PatchCore] Модель сохранена: {path}")
@@ -479,6 +498,15 @@ class PatchCore:
         self.score_min = float(state.get("score_min", 0.0))
         self.score_max = float(state.get("score_max", 1.0))
         self.threshold = float(state.get("threshold", 0.5))
+        self.backbone_name = str(state.get("backbone_name", self.backbone_name))
+        self.layers = tuple(state.get("layers", self.layers))
+        self.patch_size = int(state.get("patch_size", self.patch_size))
+        self.feature_extractor = FeatureExtractor(
+            device=self.device,
+            backbone_name=self.backbone_name,
+            layers=self.layers,
+            patch_size=self.patch_size,
+        )
 
         self.nn_index.fit(state["memory_bank"])
         print(f"[PatchCore] Модель загружена: {path}")

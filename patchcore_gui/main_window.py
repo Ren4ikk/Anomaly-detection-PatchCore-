@@ -43,6 +43,7 @@ from patchcore_gui.utils import (
     scaled_pixmap,
 )
 from patchcore_gui.history_types import InferenceHistoryEntry
+from patchcore_gui.settings_dialog import SettingsDialog, TrainingSettings
 from patchcore_gui.workers import InferenceWorker, TrainingWorker, normalize_score, select_device
 
 
@@ -108,6 +109,7 @@ class MainWindow(QMainWindow):
 
         self._train_image_dir: str = ""
         self._train_save_path: str = ""
+        self._training_settings: TrainingSettings = TrainingSettings()
 
         self._last_path: str = ""
         self._last_raw_score: float = 0.0
@@ -227,11 +229,14 @@ class MainWindow(QMainWindow):
         self._btn_train = QPushButton("▶ ОБУЧИТЬ")
         self._btn_train.setProperty("role", "train")
         self._btn_train.clicked.connect(self._start_training)
+        self._btn_training_settings = QPushButton("⚙ Настройки обучения")
+        self._btn_training_settings.clicked.connect(self._open_training_settings)
 
         lay.addWidget(self._train_dir_label)
         lay.addWidget(self._btn_choose_train_dir)
         lay.addWidget(self._train_save_label)
         lay.addWidget(self._btn_save_model_as)
+        lay.addWidget(self._btn_training_settings)
         lay.addStretch()
         lay.addWidget(self._btn_train)
         return frame
@@ -468,6 +473,7 @@ class MainWindow(QMainWindow):
             self._btn_choose_folder.setEnabled(False)
             self._btn_choose_train_dir.setEnabled(False)
             self._btn_save_model_as.setEnabled(False)
+            self._btn_training_settings.setEnabled(False)
             self._btn_train.setEnabled(False)
             self._btn_start.setEnabled(False)
             self._btn_stop.setEnabled(False)
@@ -480,6 +486,7 @@ class MainWindow(QMainWindow):
             self._btn_choose_folder.setEnabled(True)
             self._btn_choose_train_dir.setEnabled(True)
             self._btn_save_model_as.setEnabled(True)
+            self._btn_training_settings.setEnabled(True)
             self._btn_train.setEnabled(True)
             self._mode_combo.setEnabled(True)
             self._threshold_auto_check.setEnabled(True)
@@ -570,6 +577,16 @@ class MainWindow(QMainWindow):
         if not self._train_save_path:
             QMessageBox.warning(self, "Нет пути", "Укажите файл для сохранения .pt.")
             return
+        if (
+            self._training_settings.threshold_mode == "f1_optimal"
+            and not self._training_settings.validation_dir
+        ):
+            QMessageBox.warning(
+                self,
+                "Validation",
+                "Для F1-оптимального порога сначала укажите папку Validation в настройках обучения.",
+            )
+            return
         train_files = list_image_paths(self._train_image_dir)
         if not train_files:
             QMessageBox.warning(
@@ -588,11 +605,18 @@ class MainWindow(QMainWindow):
             self._train_image_dir,
             self._train_save_path,
             device,
+            self._training_settings,
         )
         self._training_worker.training_success.connect(self._on_training_success)
         self._training_worker.training_failed.connect(self._on_training_failed)
         self._training_worker.finished.connect(self._on_training_worker_finished)
         self._training_worker.start()
+
+    def _open_training_settings(self) -> None:
+        dlg = SettingsDialog(self._training_settings, self)
+        if dlg.exec():
+            if dlg.settings is not None:
+                self._training_settings = dlg.settings
 
     def _on_training_success(self, threshold: float, score_min: float, score_max: float) -> None:
         self._close_training_progress()

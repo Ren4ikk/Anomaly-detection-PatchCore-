@@ -17,6 +17,7 @@ from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import label as scipy_label
+from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve
 
@@ -215,6 +216,32 @@ class Metrics:
                 )
 
         return results
+
+    @staticmethod
+    def compute_f1_optimal_threshold(
+        y_true: NDArray,
+        y_scores: NDArray,
+    ) -> tuple[float, float]:
+        y_true_arr = np.asarray(y_true, dtype=np.int32).reshape(-1)
+        y_scores_arr = np.asarray(y_scores, dtype=np.float32).reshape(-1)
+        if y_true_arr.shape[0] != y_scores_arr.shape[0]:
+            raise ValueError("Размерности y_true и y_scores должны совпадать.")
+        if y_true_arr.shape[0] == 0:
+            raise ValueError("Пустые массивы для расчета F1-порога.")
+        if np.unique(y_true_arr).size < 2:
+            raise ValueError("Для F1-оптимизации нужны оба класса (0 и 1).")
+
+        precision, recall, thresholds = precision_recall_curve(y_true_arr, y_scores_arr)
+        if thresholds.size == 0:
+            raise ValueError("Не удалось вычислить пороги для precision-recall кривой.")
+
+        # precision/recall на 1 элемент длиннее thresholds, берем согласованные точки.
+        p = precision[:-1]
+        r = recall[:-1]
+        denom = p + r
+        f1 = np.where(denom > 0.0, 2.0 * p * r / denom, 0.0)
+        best_idx = int(np.argmax(f1))
+        return float(thresholds[best_idx]), float(f1[best_idx])
 
     # Валидация входных данных
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import queue
 import time
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -14,7 +15,9 @@ from PIL import Image
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
 from patchcore.dataset import build_train_transform
+from patchcore.metrics import Metrics
 from patchcore.patchcore import PatchCore
+from patchcore_gui.settings_dialog import TrainingSettings
 
 
 def normalize_score(raw_score: float, score_min: float, score_max: float) -> float:
@@ -47,7 +50,15 @@ class ModelLoadWorker(QThread):
 
     def run(self) -> None:
         try:
-            m = PatchCore(device=self._device)
+            state = torch.load(self._model_path, map_location="cpu", weights_only=True)
+            if not isinstance(state, dict):
+                raise ValueError("Ожидался словарь состояния PatchCore.")
+            m = PatchCore(
+                device=self._device,
+                backbone_name=str(state.get("backbone_name", "wide_resnet50_2")),
+                layers=tuple(state.get("layers", ("layer2", "layer3"))),
+                patch_size=int(state.get("patch_size", 3)),
+            )
             m.load(self._model_path)
             self.load_ok.emit(m.score_min, m.score_max, m.threshold)
         except Exception as exc:  # noqa: BLE001 — показать пользователю любую ошибку IO/weights
@@ -83,7 +94,15 @@ class InferenceWorker(QThread):
 
     def run(self) -> None:
         try:
-            model = PatchCore(device=self._device)
+            state = torch.load(self._model_path, map_location="cpu", weights_only=True)
+            if not isinstance(state, dict):
+                raise ValueError("Ожидался словарь состояния PatchCore.")
+            model = PatchCore(
+                device=self._device,
+                backbone_name=str(state.get("backbone_name", "wide_resnet50_2")),
+                layers=tuple(state.get("layers", ("layer2", "layer3"))),
+                patch_size=int(state.get("patch_size", 3)),
+            )
             model.load(self._model_path)
             transform = build_train_transform()
             self.model_ready.emit(model.score_min, model.score_max, model.threshold)
@@ -131,19 +150,39 @@ class TrainingWorker(QThread):
         train_image_dir: str,
         save_path: str,
         device: str,
+        settings: TrainingSettings,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
         self._train_image_dir = train_image_dir
         self._save_path = save_path
         self._device = device
+        self._settings = settings
 
     def run(self) -> None:
         self.training_started.emit()
         try:
-            model = PatchCore(device=self._device)
+            if self._settings.device == "auto":
+                torch_device = select_device()
+            elif self._settings.device in {"cpu", "cuda"}:
+                torch_device = self._settings.device
+            else:
+                torch_device = self._device
+
+            model = PatchCore(
+                device=torch_device,
+                coreset_ratio=self._settings.coreset_ratio,
+                n_reweight_nn=self._settings.n_reweight_nn,
+                gaussian_sigma=self._settings.gaussian_sigma,
+                backbone_name=self._settings.backbone_name,
+                layers=self._settings.layers,
+                patch_size=self._settings.patch_size,
+                use_gpu_faiss=self._settings.use_gpu_faiss,
+            )
             model.fit(self._train_image_dir)
             model.compute_score_range(self._train_image_dir)
+            if self._settings.threshold_mode == "f1_optimal":
+                self._apply_f1_threshold(model=model)
             model.save(self._save_path)
             thr = float(model.threshold)
             smin = float(model.score_min)
@@ -153,6 +192,103 @@ class TrainingWorker(QThread):
             self.training_failed.emit(str(exc))
         else:
             self.training_finished.emit()
+
+    def _apply_f1_threshold(self, model: PatchCore) -> None:
+        if not self._settings.validation_dir:
+            raise ValueError("Не выбрана папка Validation для F1-оптимального порога.")
+
+        val_images, val_labels, val_masks = self._load_validation_data(
+            self._settings.validation_dir,
+            self._settings.gt_mask_dir if self._settings.gt_mask_dir else None,
+        )
+        if len(val_images) == 0:
+            raise ValueError("Validation папка не содержит изображений.")
+
+        image_scores: list[float] = []
+        anomaly_maps: list[np.ndarray] = []
+
+        for i in range(0, len(val_images), model.batch_size):
+            batch = torch.stack(val_images[i : i + model.batch_size])
+            batch_results = model.predict(batch)
+            for r in batch_results:
+                image_scores.append(float(r.image_score))
+                anomaly_maps.append(np.asarray(r.anomaly_map, dtype=np.float32))
+
+        y_true_image = np.asarray(val_labels, dtype=np.int32)
+        y_scores_image = np.asarray(image_scores, dtype=np.float32)
+
+        if self._settings.threshold_objective == "pixel_f1":
+            if not any(m is not None for m in val_masks):
+                raise ValueError("Для Pixel-level F1 нужны GT-маски в выбранной папке.")
+            gt_masks = []
+            pred_maps = []
+            for idx, pred in enumerate(anomaly_maps):
+                mask = val_masks[idx]
+                if mask is None:
+                    gt_masks.append(np.zeros(pred.shape, dtype=np.uint8))
+                else:
+                    gt_masks.append(mask.astype(np.uint8))
+                pred_maps.append(pred)
+
+            y_true_pixel = np.stack(gt_masks).astype(np.int32).reshape(-1)
+            y_scores_pixel = np.stack(pred_maps).astype(np.float32).reshape(-1)
+            f1_thr, _ = Metrics.compute_f1_optimal_threshold(y_true_pixel, y_scores_pixel)
+        else:
+            f1_thr, _ = Metrics.compute_f1_optimal_threshold(y_true_image, y_scores_image)
+
+        model.threshold = float(f1_thr)
+
+    @staticmethod
+    def _load_validation_data(
+        validation_dir: str,
+        gt_mask_dir: str | None,
+    ) -> tuple[list[torch.Tensor], list[int], list[np.ndarray | None]]:
+        transform = build_train_transform()
+        val_path = Path(validation_dir)
+        if not val_path.is_dir():
+            raise ValueError(f"Validation директория не найдена: {validation_dir}")
+
+        category_dirs = sorted([p for p in val_path.iterdir() if p.is_dir()])
+        good_dir = val_path / "good"
+        if not good_dir.is_dir():
+            raise ValueError("Validation директория должна содержать подпапку 'good'.")
+        if len(category_dirs) < 2:
+            raise ValueError(
+                "Validation директория должна содержать 'good' и хотя бы одну папку дефектов."
+            )
+
+        image_ext = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+        images: list[torch.Tensor] = []
+        labels: list[int] = []
+        masks: list[np.ndarray | None] = []
+
+        mask_root = Path(gt_mask_dir) if gt_mask_dir else None
+        if mask_root is not None and not mask_root.is_dir():
+            raise ValueError(f"Директория GT масок не найдена: {gt_mask_dir}")
+
+        for category_dir in category_dirs:
+            category = category_dir.name
+            label = 0 if category == "good" else 1
+            for img_path in sorted(category_dir.iterdir()):
+                if not img_path.is_file() or img_path.suffix.lower() not in image_ext:
+                    continue
+                image = Image.open(img_path).convert("RGB")
+                images.append(transform(image))
+                labels.append(label)
+
+                if label == 0 or mask_root is None:
+                    masks.append(None)
+                    continue
+
+                candidates = sorted(mask_root.glob(f"{category}/{img_path.stem}*"))
+                if not candidates:
+                    masks.append(None)
+                    continue
+                mask_img = Image.open(candidates[0]).convert("L")
+                mask_img = mask_img.resize((224, 224), Image.NEAREST)
+                masks.append((np.array(mask_img) > 0).astype(np.uint8))
+
+        return images, labels, masks
 
 
 def select_device(preference: str = "auto") -> str:
