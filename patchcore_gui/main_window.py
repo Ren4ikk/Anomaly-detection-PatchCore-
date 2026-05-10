@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSplitter,
     QTabWidget,
+    QDoubleSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -48,7 +49,7 @@ from patchcore_gui.utils import (
 )
 from patchcore_gui.history_types import InferenceHistoryEntry
 from patchcore_gui.settings_dialog import SettingsDialog, TrainingSettings
-from patchcore_gui.workers import InferenceWorker, TrainingWorker, normalize_score, select_device
+from patchcore_gui.workers import InferenceWorker, TrainingWorker, select_device
 
 
 class ViewMode(IntEnum):
@@ -325,8 +326,8 @@ class MainWindow(QMainWindow):
         self._btn_choose_folder = QPushButton("Папка с изображениями")
         self._btn_choose_folder.clicked.connect(self._choose_folder)
 
-        self._btn_start = QPushButton("▶ СТАРТ")
-        self._btn_stop = QPushButton("⏹ СТОП")
+        self._btn_start = QPushButton("СТАРТ")
+        self._btn_stop = QPushButton("СТОП")
         self._btn_start.clicked.connect(self._start_conveyor)
         self._btn_stop.clicked.connect(self._stop_conveyor)
         self._btn_stop.setEnabled(False)
@@ -388,8 +389,8 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._image_view, stretch=1)
 
         gal = QHBoxLayout()
-        self._btn_hist_prev = QPushButton("⬅️ Предыдущее")
-        self._btn_hist_next = QPushButton("Следующее ➡️")
+        self._btn_hist_prev = QPushButton("Предыдущее")
+        self._btn_hist_next = QPushButton("Следующее")
         self._btn_hist_prev.clicked.connect(self._on_history_prev)
         self._btn_hist_next.clicked.connect(self._on_history_next)
         self._gallery_label = QLabel("Нет результатов")
@@ -432,18 +433,23 @@ class MainWindow(QMainWindow):
         self._threshold_auto_check.toggled.connect(self._on_auto_threshold_toggled)
         lay.addWidget(self._threshold_auto_check)
 
-        lay.addWidget(QLabel("Ручной порог (шкала score_min … score_max модели):"))
-        self._threshold_slider = QSlider(Qt.Orientation.Horizontal)
-        self._threshold_slider.setMinimum(0)
-        self._threshold_slider.setMaximum(100)
-        self._threshold_slider.setSingleStep(1)
-        self._threshold_slider.setPageStep(5)
-        self._threshold_slider.setValue(50)
-        self._threshold_slider.setEnabled(False)
-        self._threshold_slider.valueChanged.connect(self._on_threshold_changed)
-        lay.addWidget(self._threshold_slider)
+        lay.addWidget(QLabel("Ручной порог:"))
+        self._threshold_spinbox = QDoubleSpinBox()
+        self._threshold_spinbox.setDecimals(4)
+        self._threshold_spinbox.setMinimum(0.0)
+        self._threshold_spinbox.setMaximum(1e9)
+        self._threshold_spinbox.setSingleStep(0.0001)
+        self._threshold_spinbox.setValue(0.5)
+        self._threshold_spinbox.setEnabled(False)
+        self._threshold_spinbox.setToolTip(
+            "Сырое значение порога в единицах L2-расстояния модели.\n"
+            "Используйте стрелки (шаг 0.0001) или введите значение вручную."
+        )
+        self._threshold_spinbox.valueChanged.connect(self._on_threshold_changed)
+        lay.addWidget(self._threshold_spinbox)
 
         self._threshold_caption = QLabel("Порог: — (выберите модель .pt)")
+        self._threshold_caption.setProperty("role", "hint")
         lay.addWidget(self._threshold_caption)
         lay.addStretch()
         return frame
@@ -461,7 +467,7 @@ class MainWindow(QMainWindow):
         self._bottom_tabs.setDocumentMode(True)
         top_row.addWidget(self._bottom_tabs, stretch=1)
 
-        self._btn_clear_journal = QPushButton("🗑 Очистить журнал")
+        self._btn_clear_journal = QPushButton("Очистить журнал")
         self._btn_clear_journal.setFixedWidth(160)
         self._btn_clear_journal.setProperty("role", "clear")
         self._btn_clear_journal.clicked.connect(self._clear_journal)
@@ -481,7 +487,7 @@ class MainWindow(QMainWindow):
         self._log_table.setEditTriggers(self._log_table.EditTrigger.NoEditTriggers)
         self._log_table.setSelectionBehavior(self._log_table.SelectionBehavior.SelectRows)
         journal_layout.addWidget(self._log_table)
-        self._bottom_tabs.addTab(journal_widget, "📋 Журнал")
+        self._bottom_tabs.addTab(journal_widget, "Журнал")
 
         # --- Tab 2: Terminal/stdout log ---
         self._log_text = QTextEdit()
@@ -491,7 +497,7 @@ class MainWindow(QMainWindow):
         self._log_text.setStyleSheet(
             "QTextEdit { background-color: #1a1a1c; color: #b0d0b0; border: none; }"
         )
-        self._bottom_tabs.addTab(self._log_text, "🖥 Лог")
+        self._bottom_tabs.addTab(self._log_text, "Лог")
 
         # Sync clear button visibility with active tab
         self._bottom_tabs.currentChanged.connect(self._on_bottom_tab_changed)
@@ -565,34 +571,31 @@ class MainWindow(QMainWindow):
             self._left_tabs.setCurrentIndex(0)
 
     def _current_threshold_raw(self) -> float:
-        """
-        Активный порог в сырой шкале скоров модели.
-
-        Авто: ``threshold`` из чекпоинта. Ручной: линейная интерполяция между
-        ``score_min`` и ``score_max`` по положению слайдера 0…100.
-        """
+        """Активный порог в сырой шкале скоров модели."""
         if self._threshold_auto_check.isChecked():
             return float(self._model_auto_threshold_raw)
-        span = self._score_max - self._score_min
-        t = self._threshold_slider.value() / 100.0
-        return self._score_min + t * span
-
-    def _slider_pos_from_raw_threshold(self, raw_thr: float) -> int:
-        """Позиция слайдера 0…100, соответствующая сырому порогу (для отображения)."""
-        span = self._score_max - self._score_min
-        if span <= 1e-12:
-            return 50
-        pos = (raw_thr - self._score_min) / span
-        return int(round(float(np.clip(pos, 0.0, 1.0)) * 100.0))
+        return float(self._threshold_spinbox.value())
 
     def _sync_threshold_ui_from_metadata(self) -> None:
-        """Подпись и положение слайдера после чтения .pt / обучения / model_ready."""
+        """Обновляет SpinBox и подпись после загрузки модели / обучения / model_ready."""
+        # Подстраиваем шаг под масштаб диапазона — удобнее крутить стрелками
+        span = self._score_max - self._score_min
+        if span > 0:
+            magnitude = span / 1000.0
+            # Округляем шаг до 1, 2 или 5 × 10^n
+            import math
+            exp = math.floor(math.log10(magnitude)) if magnitude > 0 else -4
+            step = 10 ** exp
+        else:
+            step = 0.0001
+        self._threshold_spinbox.setSingleStep(step)
+
         if self._threshold_auto_check.isChecked():
-            self._threshold_slider.blockSignals(True)
-            self._threshold_slider.setValue(self._slider_pos_from_raw_threshold(self._model_auto_threshold_raw))
-            self._threshold_slider.blockSignals(False)
+            self._threshold_spinbox.blockSignals(True)
+            self._threshold_spinbox.setValue(self._model_auto_threshold_raw)
+            self._threshold_spinbox.blockSignals(False)
             self._threshold_caption.setText(
-                f"Порог: {self._model_auto_threshold_raw:.4f} (авто, из модели)"
+                f"Авто (из модели): {self._model_auto_threshold_raw:.4f}"
             )
         else:
             self._refresh_threshold_caption_manual()
@@ -600,7 +603,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_threshold_caption_manual(self) -> None:
         cur = self._current_threshold_raw()
-        self._threshold_caption.setText(f"Порог: {cur:.4f} (вручную)")
+        self._threshold_caption.setText(f"Вручную: {cur:.4f}")
 
     def _update_gallery_buttons_state(self) -> None:
         n = len(self._history)
@@ -639,10 +642,7 @@ class MainWindow(QMainWindow):
         self._last_elapsed_ms = e.elapsed_ms
         self._last_rgb = e.rgb
         self._last_map = e.anomaly_map
-        norm = normalize_score(e.raw_score, self._score_min, self._score_max)
-        self._score_value.setText(
-            f"Score: {e.raw_score:.4f} (норм: {norm:.2f})"
-        )
+        self._score_value.setText(f"Score: {e.raw_score:.4f}")
         self._time_value.setText(f"Время: {e.elapsed_ms:.0f} мс")
         self._update_gallery_label()
         self._update_gallery_buttons_state()
@@ -660,10 +660,14 @@ class MainWindow(QMainWindow):
             self._apply_history_index()
 
     def _on_auto_threshold_toggled(self, checked: bool) -> None:
-        self._threshold_slider.setEnabled(not checked)
+        self._threshold_spinbox.setEnabled(not checked)
         if checked:
             self._sync_threshold_ui_from_metadata()
         else:
+            # Pre-fill spinbox with current auto value so user starts from a sensible number
+            self._threshold_spinbox.blockSignals(True)
+            self._threshold_spinbox.setValue(self._model_auto_threshold_raw)
+            self._threshold_spinbox.blockSignals(False)
             self._refresh_threshold_caption_manual()
         self._refresh_verdict()
 
@@ -682,7 +686,7 @@ class MainWindow(QMainWindow):
             self._btn_stop.setEnabled(False)
             self._mode_combo.setEnabled(False)
             self._threshold_auto_check.setEnabled(False)
-            self._threshold_slider.setEnabled(False)
+            self._threshold_spinbox.setEnabled(False)
         else:
             self._role_combo.setEnabled(True)
             self._btn_choose_model.setEnabled(True)
@@ -693,7 +697,7 @@ class MainWindow(QMainWindow):
             self._btn_train.setEnabled(True)
             self._mode_combo.setEnabled(True)
             self._threshold_auto_check.setEnabled(True)
-            self._threshold_slider.setEnabled(not self._threshold_auto_check.isChecked())
+            self._threshold_spinbox.setEnabled(not self._threshold_auto_check.isChecked())
             self._btn_stop.setEnabled(self._running)
             self._btn_start.setEnabled(not self._running)
 
@@ -955,7 +959,7 @@ class MainWindow(QMainWindow):
         self,
         path: str,
         raw_score: float,
-        norm_score: float,
+        _norm_score: float,
         anomaly_map: np.ndarray,
         elapsed_ms: float,
     ) -> None:
@@ -995,7 +999,7 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Ошибка", f"{path}\n{message}")
         self._stop_conveyor()
 
-    def _on_threshold_changed(self, _value: int) -> None:
+    def _on_threshold_changed(self, _value: float) -> None:
         if self._threshold_auto_check.isChecked():
             return
         self._refresh_threshold_caption_manual()
