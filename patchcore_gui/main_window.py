@@ -34,6 +34,8 @@ from PyQt6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QDialog,
+    QDialogButtonBox,
 )
 
 from patchcore_gui.utils import (
@@ -109,9 +111,107 @@ class _StdoutRedirector:
             self._original.flush()
 
     def fileno(self):
-        if self._original:
-            return self._original.fileno()
-        raise OSError("no fileno")
+        raise OSError("fileno not supported on redirected stream")
+
+
+class ModelInfoDialog(QDialog):
+    """
+    Диалог просмотра параметров обученной модели PatchCore, считанных из .pt файла.
+    Отображает все метаданные, сохранённые в state dict через PatchCore.save().
+    """
+
+    def __init__(self, state: dict, model_path: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Параметры модели")
+        self.setModal(True)
+        self.resize(520, 480)
+        self._build_ui(state, model_path)
+
+    def _build_ui(self, state: dict, model_path: str) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(10)
+
+        # Path header
+        path_label = QLabel(f"<b>Файл:</b> {model_path}")
+        path_label.setWordWrap(True)
+        path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        root.addWidget(path_label)
+
+        # Parameters table
+        table = QTableWidget(self)
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels(["Параметр", "Значение"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(table.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(table.SelectionBehavior.SelectRows)
+        table.setAlternatingRowColors(True)
+
+        rows = ModelInfoDialog._build_rows(state)
+        table.setRowCount(len(rows))
+        section_font = QFont()
+        section_font.setBold(True)
+        section_color = QColor("#8fc3f0")
+
+        for i, (param, value) in enumerate(rows):
+            p_item = QTableWidgetItem(param)
+            v_item = QTableWidgetItem(value)
+            is_section = param.startswith("──")
+            if is_section:
+                p_item.setFont(section_font)
+                p_item.setForeground(section_color)
+                v_item.setForeground(section_color)
+                flags = p_item.flags() & ~Qt.ItemFlag.ItemIsSelectable
+                p_item.setFlags(flags)
+                v_item.setFlags(flags)
+            p_item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            v_item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            table.setItem(i, 0, p_item)
+            table.setItem(i, 1, v_item)
+
+        table.resizeColumnToContents(0)
+        root.addWidget(table)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
+        buttons.rejected.connect(self.accept)
+        root.addWidget(buttons)
+
+    @staticmethod
+    def _build_rows(state: dict) -> list[tuple[str, str]]:
+        """Формирует список (параметр, значение) из state dict модели."""
+        rows: list[tuple[str, str]] = []
+
+        # Architecture
+        rows.append(("── Архитектура ──", ""))
+        rows.append(("Backbone", str(state.get("backbone_name", "—"))))
+        layers = state.get("layers", ())
+        rows.append(("Слои (layers)", ", ".join(layers) if layers else "—"))
+        rows.append(("Размер патча (patch_size)", str(state.get("patch_size", "—"))))
+
+        # Coreset / index
+        rows.append(("── Coreset и индекс ──", ""))
+        coreset_ratio = state.get("coreset_ratio", None)
+        rows.append(("Coreset ratio", f"{coreset_ratio * 100:.2f} %" if coreset_ratio is not None else "—"))
+        memory_bank = state.get("memory_bank", None)
+        if memory_bank is not None:
+            rows.append(("Размер M_C (банк памяти)", str(tuple(memory_bank.shape))))
+        else:
+            rows.append(("Размер M_C (банк памяти)", "—"))
+        spatial = state.get("spatial_size", None)
+        rows.append(("Карта признаков (spatial_size)", str(spatial) if spatial else "—"))
+
+        # Scoring
+        rows.append(("── Скоры и порог ──", ""))
+        rows.append(("score_min", f"{float(state['score_min']):.6f}" if "score_min" in state else "—"))
+        rows.append(("score_max", f"{float(state['score_max']):.6f}" if "score_max" in state else "—"))
+        rows.append(("threshold", f"{float(state['threshold']):.6f}" if "threshold" in state else "—"))
+
+        # Hyperparams
+        rows.append(("── Гиперпараметры обучения ──", ""))
+        rows.append(("n_reweight_nn", str(state.get("n_reweight_nn", "—"))))
+        rows.append(("gaussian_sigma", str(state.get("gaussian_sigma", "—"))))
+
+        return rows
 
 
 class MainWindow(QMainWindow):
@@ -124,6 +224,7 @@ class MainWindow(QMainWindow):
 
         self._device_pref = device_preference
         self._model_path: str = ""
+        self._model_state: dict | None = None
         self._image_dir: str = ""
         self._image_paths: list[str] = []
         self._conveyor_index: int = 0
@@ -232,8 +333,13 @@ class MainWindow(QMainWindow):
         self._btn_start.setProperty("role", "start")
         self._btn_stop.setProperty("role", "stop")
 
+        self._btn_model_info = QPushButton("ℹ Параметры модели")
+        self._btn_model_info.clicked.connect(self._show_model_info)
+        self._btn_model_info.setEnabled(False)
+
         lay.addWidget(self._model_label)
         lay.addWidget(self._btn_choose_model)
+        lay.addWidget(self._btn_model_info)
         lay.addWidget(self._folder_label)
         lay.addWidget(self._btn_choose_folder)
         lay.addStretch()
@@ -759,8 +865,16 @@ class MainWindow(QMainWindow):
             )
             return
         self._model_path = path
+        self._model_state = state
         self._model_label.setText(f"Модель:\n{path}")
+        self._btn_model_info.setEnabled(True)
         self._sync_threshold_ui_from_metadata()
+
+    def _show_model_info(self) -> None:
+        if self._model_state is None:
+            return
+        dlg = ModelInfoDialog(self._model_state, self._model_path, self)
+        dlg.exec()
 
     def _choose_folder(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Папка с изображениями")
