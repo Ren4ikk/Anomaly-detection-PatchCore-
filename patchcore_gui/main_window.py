@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime
 from enum import IntEnum
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QPalette, QColor, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -30,6 +31,7 @@ from PyQt6.QtWidgets import (
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -80,6 +82,38 @@ class ScaledImageLabel(QLabel):
         super().setPixmap(scaled)
 
 
+class _QtLogSignaller(QObject):
+    """Вспомогательный объект для потокобезопасной передачи сообщений в GUI через сигнал."""
+    message = pyqtSignal(str)
+
+
+class _StdoutRedirector:
+    """
+    Перехватывает sys.stdout / sys.stderr и дублирует вывод в QTextEdit,
+    при этом сохраняя оригинальный поток (терминал).
+    """
+
+    def __init__(self, original, signal: "_QtLogSignaller") -> None:
+        self._original = original
+        self._signal = signal
+
+    def write(self, text: str) -> None:
+        if self._original:
+            self._original.write(text)
+        stripped = text.rstrip("\n")
+        if stripped:
+            self._signal.message.emit(stripped)
+
+    def flush(self) -> None:
+        if self._original:
+            self._original.flush()
+
+    def fileno(self):
+        if self._original:
+            return self._original.fileno()
+        raise OSError("no fileno")
+
+
 class MainWindow(QMainWindow):
     """Основное окно: управление, визуализация, вердикт и журнал."""
 
@@ -124,6 +158,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._apply_dark_theme()
         self._on_role_changed(self._role_combo.currentIndex())
+        self._setup_log_capture()
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -308,15 +343,74 @@ class MainWindow(QMainWindow):
         return frame
 
     def _build_log_panel(self) -> QFrame:
-        frame, flay = self._frame("Журнал")
+        frame, flay = self._frame("Журнал / Лог")
+        frame.setMaximumHeight(220)
+
+        # --- Tab bar row: tabs on the left, clear button on the right ---
+        top_row = QHBoxLayout()
+        top_row.setContentsMargins(0, 0, 0, 0)
+        top_row.setSpacing(6)
+
+        self._bottom_tabs = QTabWidget()
+        self._bottom_tabs.setDocumentMode(True)
+        top_row.addWidget(self._bottom_tabs, stretch=1)
+
+        self._btn_clear_journal = QPushButton("🗑 Очистить журнал")
+        self._btn_clear_journal.setFixedWidth(160)
+        self._btn_clear_journal.setProperty("role", "clear")
+        self._btn_clear_journal.clicked.connect(self._clear_journal)
+        top_row.addWidget(self._btn_clear_journal, alignment=Qt.AlignmentFlag.AlignTop)
+
+        flay.addLayout(top_row)
+
+        # --- Tab 1: Inference journal ---
+        journal_widget = QWidget()
+        journal_layout = QVBoxLayout(journal_widget)
+        journal_layout.setContentsMargins(0, 0, 0, 0)
+
         self._log_table = QTableWidget(0, 4)
         self._log_table.setHorizontalHeaderLabels(["Время", "Имя файла", "Score", "Статус"])
         self._log_table.horizontalHeader().setStretchLastSection(True)
         self._log_table.setAlternatingRowColors(True)
         self._log_table.setEditTriggers(self._log_table.EditTrigger.NoEditTriggers)
         self._log_table.setSelectionBehavior(self._log_table.SelectionBehavior.SelectRows)
-        flay.addWidget(self._log_table)
+        journal_layout.addWidget(self._log_table)
+        self._bottom_tabs.addTab(journal_widget, "📋 Журнал")
+
+        # --- Tab 2: Terminal/stdout log ---
+        self._log_text = QTextEdit()
+        self._log_text.setReadOnly(True)
+        self._log_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
+        self._log_text.setFont(QFont("Courier New", 9))
+        self._log_text.setStyleSheet(
+            "QTextEdit { background-color: #1a1a1c; color: #b0d0b0; border: none; }"
+        )
+        self._bottom_tabs.addTab(self._log_text, "🖥 Лог")
+
+        # Sync clear button visibility with active tab
+        self._bottom_tabs.currentChanged.connect(self._on_bottom_tab_changed)
+        self._on_bottom_tab_changed(0)
+
         return frame
+
+    def _on_bottom_tab_changed(self, index: int) -> None:
+        self._btn_clear_journal.setVisible(index == 0)
+
+    def _clear_journal(self) -> None:
+        self._log_table.setRowCount(0)
+
+    def _setup_log_capture(self) -> None:
+        """Перехватывает sys.stdout и sys.stderr — только print() и явный вывод программы."""
+        signaller = _QtLogSignaller()
+        signaller.message.connect(self._append_log_text)
+        sys.stdout = _StdoutRedirector(sys.__stdout__, signaller)
+        sys.stderr = _StdoutRedirector(sys.__stderr__, signaller)
+
+    def _append_log_text(self, text: str) -> None:
+        self._log_text.append(text)
+        # Auto-scroll to bottom
+        sb = self._log_text.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
     def _apply_dark_theme(self) -> None:
         pal = self.palette()
@@ -352,6 +446,9 @@ class MainWindow(QMainWindow):
             QSlider::handle:horizontal { width: 16px; margin: -5px 0; background: #6ba3d6; border-radius: 8px; }
             QTableWidget { gridline-color: #444; background-color: #252526; alternate-background-color: #2a2a2e; }
             QHeaderView::section { background-color: #3c3c44; padding: 4px; border: 1px solid #555; }
+            QTextEdit { background-color: #1a1a1c; color: #b0d0b0; border: none; }
+            QPushButton[role="clear"] { background-color: #3a2a2a; border: 1px solid #6a3a3a; color: #e08080; }
+            QPushButton[role="clear"]:hover { background-color: #4a2e2e; }
             """
         )
 
