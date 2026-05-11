@@ -13,6 +13,10 @@ jobs:
   build-windows-exe:
     runs-on: windows-latest
 
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,7 +42,7 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          poetry run pyinstaller --onefile --windowed --name="PatchCore_App_${{ inputs.version_tag }}" main.py
+          poetry run pyinstaller --onefile --windowed --name="PatchCore_App_${{ inputs.version_tag }}" patchcore_gui/main_window.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
