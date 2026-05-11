@@ -1103,6 +1103,8 @@ class MainWindow(QMainWindow):
         geom = settings.value("geometry")
         if geom is not None:
             self.restoreGeometry(geom)
+        else:
+            self.showMaximized()
 
         # 2. Выпадающие списки и переключатели
         self._role_combo.setCurrentIndex(settings.value("role_index", 0, type=int))
