@@ -1,0 +1,48 @@
+name: Build Windows Executable
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Версия приложения (добавится к имени файла)'
+        required: false
+        default: 'v1.0'
+        type: string
+
+jobs:
+  build-windows-exe:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.3.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Install dependencies (without GPU torch)
+        run: |
+          poetry install --without torch-gpu --with dev --no-root
+          poetry run pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          poetry run pip install -r requirements.txt
+          poetry run pip install pyinstaller
+
+      - name: Build EXE with PyInstaller
+        run: |
+          poetry run pyinstaller --onefile --windowed --name="PatchCore_App_${{ inputs.version_tag }}" main.py
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PatchCore-Executable-${{ inputs.version_tag }}
+          path: dist/*.exe
+          retention-days: 7
