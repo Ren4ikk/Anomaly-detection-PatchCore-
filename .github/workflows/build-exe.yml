@@ -42,7 +42,7 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          poetry run pyinstaller --onefile --windowed --name="PatchCore_App_${{ inputs.version_tag }}" patchcore_gui/main_window.py
+          poetry run pyinstaller --onefile --name="PatchCore_App_${{ inputs.version_tag }}" patchcore_gui/main_window.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
