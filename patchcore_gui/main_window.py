@@ -13,7 +13,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QSettings
 from PyQt6.QtGui import QFont, QPalette, QColor, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -261,6 +261,8 @@ class MainWindow(QMainWindow):
         self._apply_dark_theme()
         self._on_role_changed(self._role_combo.currentIndex())
         self._setup_log_capture()
+
+        self._load_ui_state()
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -1068,3 +1070,76 @@ class MainWindow(QMainWindow):
         for col, it in enumerate(items):
             it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._log_table.setItem(0, col, it)
+
+    def closeEvent(self, event) -> None:
+        """Перехватываем закрытие окна для сохранения UI и остановки процессов."""
+        if self._running:
+            self._stop_conveyor()
+        self._save_ui_state()
+        super().closeEvent(event)
+
+    def _save_ui_state(self) -> None:
+        """Сохраняет состояние интерфейса в QSettings."""
+        # "VKR" — имя организации/проекта, "PatchCoreApp" — имя приложения
+        settings = QSettings("VKR", "PatchCoreApp")
+
+        settings.setValue("geometry", self.saveGeometry())
+        settings.setValue("role_index", self._role_combo.currentIndex())
+        settings.setValue("mode_index", self._mode_combo.currentIndex())
+
+        settings.setValue("model_path", self._model_path)
+        settings.setValue("image_dir", self._image_dir)
+        settings.setValue("train_image_dir", self._train_image_dir)
+        settings.setValue("train_save_path", self._train_save_path)
+
+        settings.setValue("threshold_auto", self._threshold_auto_check.isChecked())
+        settings.setValue("threshold_manual", self._threshold_spinbox.value())
+
+    def _load_ui_state(self) -> None:
+        """Загружает состояние интерфейса при старте программы."""
+        settings = QSettings("VKR", "PatchCoreApp")
+
+        # 1. Восстанавливаем размер окна (если окно ранее было закрыто)
+        geom = settings.value("geometry")
+        if geom is not None:
+            self.restoreGeometry(geom)
+
+        # 2. Выпадающие списки и переключатели
+        self._role_combo.setCurrentIndex(settings.value("role_index", 0, type=int))
+        self._mode_combo.setCurrentIndex(settings.value("mode_index", 0, type=int))
+        self._threshold_auto_check.setChecked(settings.value("threshold_auto", True, type=bool))
+        self._threshold_spinbox.setValue(settings.value("threshold_manual", 0.5, type=float))
+
+        # 3. Восстанавливаем обычные пути к папкам и обновляем их ярлыки (Label)
+        self._image_dir = settings.value("image_dir", "", type=str)
+        if self._image_dir:
+            self._folder_label.setText(f"Папка:\n{self._image_dir}")
+
+        self._train_image_dir = settings.value("train_image_dir", "", type=str)
+        if self._train_image_dir:
+            self._train_dir_label.setText(f"Папка НОРМЫ:\n{self._train_image_dir}")
+
+        self._train_save_path = settings.value("train_save_path", "", type=str)
+        if self._train_save_path:
+            self._train_save_label.setText(f"Файл модели:\n{self._train_save_path}")
+
+        # 4. Восстанавливаем модель только если файл всё ещё существует на диске
+        saved_model = settings.value("model_path", "", type=str)
+        if saved_model and Path(saved_model).is_file():
+            self._model_path = saved_model
+            self._model_label.setText(f"Модель:\n{self._model_path}")
+            self._try_restore_model_metadata(self._model_path)
+
+    def _try_restore_model_metadata(self, path: str) -> None:
+        """Тихо подгружает метаданные из сохраненного файла без блокировки."""
+        try:
+            state = torch.load(path, map_location="cpu", weights_only=True)
+            if isinstance(state, dict):
+                self._model_state = state
+                self._score_min = float(state.get("score_min", 0.0))
+                self._score_max = float(state.get("score_max", 1.0))
+                self._model_auto_threshold_raw = float(state.get("threshold", 0.5))
+                self._btn_model_info.setEnabled(True)
+                self._sync_threshold_ui_from_metadata()
+        except Exception as e:
+            print(f"[UI State] Не удалось восстановить метаданные модели: {e}")
