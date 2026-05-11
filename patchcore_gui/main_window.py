@@ -1086,7 +1086,6 @@ class MainWindow(QMainWindow):
 
     def _save_ui_state(self) -> None:
         """Сохраняет состояние интерфейса в QSettings."""
-        # "VKR" — имя организации/проекта, "PatchCoreApp" — имя приложения
         settings = QSettings("VKR", "PatchCoreApp")
 
         settings.setValue("geometry", self.saveGeometry())

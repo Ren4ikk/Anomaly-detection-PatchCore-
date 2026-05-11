@@ -77,7 +77,16 @@ class SettingsDialog(QDialog):
 
         form = QFormLayout()
         self._backbone_combo = QComboBox(page)
-        self._backbone_combo.addItems(["wide_resnet50_2", "resnet50", "resnet18"])
+        self._backbone_combo.addItems([
+            "wide_resnet50_2",
+            "wide_resnet101_2",
+            "resnet18",
+            "resnet34",
+            "resnet50",
+            "resnet101",
+            "resnext50_32x4d",
+            "resnext101_32x8d"
+        ])
         form.addRow("Backbone:", self._backbone_combo)
 
         layers_group = QGroupBox("Используемые слои (Feature Hierarchy)", page)
