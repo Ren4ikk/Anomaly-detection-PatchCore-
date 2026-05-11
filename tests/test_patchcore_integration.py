@@ -53,6 +53,9 @@ def fitted_model(tmp_path_factory) -> tuple[PatchCore, Path]:
         num_workers=0,       # num_workers=0 обязателен в pytest (форки процессов)
     )
     model.fit(str(train_dir))
+    # Вычисляем диапазон скоров и порог сразу после fit() —
+    # score_min, score_max, threshold заполняются реальными значениями.
+    model.compute_score_range(str(train_dir))
     return model, train_dir
 
 
@@ -68,7 +71,7 @@ def test_image() -> torch.Tensor:
 # -----------------------------------------------------------------------------
 
 class TestPatchCoreFit:
-    """Тесты состояния модели после fit()."""
+    """Тесты состояния модели после fit() и compute_score_range()."""
 
     def test_is_fitted_after_fit(self, fitted_model):
         """После fit() индекс должен быть построен."""
@@ -80,6 +83,32 @@ class TestPatchCoreFit:
         model, _ = fitted_model
         assert model._spatial_size is not None
         assert model._spatial_size == (28, 28)
+
+    def test_score_range_valid(self, fitted_model):
+        """
+        После compute_score_range() score_min < score_max.
+        Оба значения — сырые L2-расстояния, заведомо > 0.
+        """
+        model, _ = fitted_model
+        assert model.score_min < model.score_max, (
+            f"score_min={model.score_min:.4f} должен быть < score_max={model.score_max:.4f}"
+        )
+        assert model.score_min >= 0.0, "score_min — L2-расстояние, не может быть < 0"
+        assert model.score_max > 0.0
+
+    def test_threshold_above_score_min(self, fitted_model):
+        """threshold должен быть выше score_min (порог = p99 + 3σ по train-скорам)."""
+        model, _ = fitted_model
+        assert model.threshold > model.score_min, (
+            f"threshold={model.threshold:.4f} <= score_min={model.score_min:.4f}"
+        )
+
+    def test_score_range_finite(self, fitted_model):
+        """score_min, score_max, threshold должны быть конечными числами."""
+        model, _ = fitted_model
+        assert np.isfinite(model.score_min)
+        assert np.isfinite(model.score_max)
+        assert np.isfinite(model.threshold)
 
     def test_repr_shows_fitted(self, fitted_model):
         """__repr__ должен показывать 'fitted'."""
@@ -110,7 +139,10 @@ class TestPatchCorePredict:
         assert isinstance(result, PredictionResult)
 
     def test_image_score_is_finite(self, fitted_model, test_image):
-        """image_score должен быть конечным положительным числом."""
+        """
+        image_score — re-weighted L2-расстояние наиболее аномального патча.
+        Должен быть конечным и неотрицательным (weight ∈ [0,1], s_star ≥ 0).
+        """
         model, _ = fitted_model
         result = model.predict_single(test_image.squeeze(0))
         assert np.isfinite(result.image_score)
@@ -123,16 +155,24 @@ class TestPatchCorePredict:
         assert result.anomaly_map.shape == (224, 224)
 
     def test_anomaly_map_dtype(self, fitted_model, test_image):
-        """anomaly_map должна быть float32."""
+        """
+        anomaly_map должна быть float32.
+        Значения — сырые L2-расстояния, нормализация намеренно убрана
+        (нормализация per-image нарушает сравнимость скоров между кадрами).
+        """
         model, _ = fitted_model
         result = model.predict_single(test_image.squeeze(0))
         assert result.anomaly_map.dtype == np.float32
 
     def test_anomaly_map_finite(self, fitted_model, test_image):
-        """В anomaly_map не должно быть NaN или Inf."""
+        """
+        anomaly_map содержит сырые L2-расстояния (без нормализации в [0,1]):
+        не должно быть NaN/Inf, все значения >= 0.
+        """
         model, _ = fitted_model
         result = model.predict_single(test_image.squeeze(0))
         assert np.isfinite(result.anomaly_map).all()
+        assert (result.anomaly_map >= 0).all(), "L2-расстояния всегда неотрицательны"
 
     def test_patch_scores_shape(self, fitted_model, test_image):
         """patch_scores должны иметь форму (28*28,) = (784,)."""

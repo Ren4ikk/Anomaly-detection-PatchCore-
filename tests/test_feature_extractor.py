@@ -175,8 +175,10 @@ class TestFeatureExtractor:
         )
 
     def test_repr(self, extractor: FeatureExtractor):
-        """__repr__ должен содержать информацию о backbone и конфигурации."""
+        """__repr__ должен содержать backbone_name, слои и target_dim."""
         r = repr(extractor)
-        assert "WideResNet50" in r
+        # repr возвращает backbone_name как строку: "backbone=wide_resnet50_2, layers=..."
+        assert "wide_resnet50_2" in r
         assert "layer2" in r
         assert "layer3" in r
+        assert "1024" in r  # target_dim
