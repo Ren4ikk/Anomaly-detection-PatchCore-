@@ -475,6 +475,11 @@ class MainWindow(QMainWindow):
         self._btn_clear_journal.clicked.connect(self._clear_journal)
         top_row.addWidget(self._btn_clear_journal, alignment=Qt.AlignmentFlag.AlignTop)
 
+        self._btn_export_excel = QPushButton("Экспорт в Excel")
+        self._btn_export_excel.setFixedWidth(160)
+        self._btn_export_excel.clicked.connect(self._export_to_excel)
+        top_row.addWidget(self._btn_export_excel, alignment=Qt.AlignmentFlag.AlignTop)
+
         flay.addLayout(top_row)
 
         # --- Tab 1: Inference journal ---
@@ -509,6 +514,7 @@ class MainWindow(QMainWindow):
 
     def _on_bottom_tab_changed(self, index: int) -> None:
         self._btn_clear_journal.setVisible(index == 0)
+        self._btn_export_excel.setVisible(index == 0)
 
     def _clear_journal(self) -> None:
         self._log_table.setRowCount(0)
@@ -1145,3 +1151,83 @@ class MainWindow(QMainWindow):
                 self._sync_threshold_ui_from_metadata()
         except Exception as e:
             print(f"[UI State] Не удалось восстановить метаданные модели: {e}")
+
+    def _export_to_excel(self) -> None:
+        """Собирает параметры модели и историю инференса и сохраняет в Excel."""
+        if not self._history:
+            QMessageBox.warning(self, "Пусто", "Нет данных для экспорта. Сначала запустите конвейер.")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить отчет",
+            "PatchCore_Report.xlsx",
+            "Excel Files (*.xlsx)"
+        )
+        if not path:
+            return
+
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+
+        try:
+            import pandas as pd
+        except ImportError:
+            QMessageBox.critical(
+                self,
+                "Ошибка",
+                "Для экспорта в Excel необходимы библиотеки pandas и openpyxl.\nУстановите их командой: pip install pandas openpyxl"
+            )
+            return
+
+        try:
+            # 1. Формируем лист с параметрами модели
+            model_data = {
+                "Параметр": ["Путь к модели"],
+                "Значение": [self._model_path]
+            }
+            if self._model_state:
+                # Извлекаем все базовые типы из словаря состояния модели
+                for k, v in self._model_state.items():
+                    if isinstance(v, (int, float, str, tuple, list)):
+                        model_data["Параметр"].append(k)
+                        model_data["Значение"].append(str(v))
+
+            df_model = pd.DataFrame(model_data)
+
+            # 2. Формируем лист с результатами
+            results_data = {
+                "Имя файла": [],
+                "Полный путь": [],
+                "Score (сырой)": [],
+                "Порог отбраковки": [],
+                "Вердикт": [],
+                "Время инференса (мс)": []
+            }
+
+            thr = self._current_threshold_raw()
+
+            for entry in self._history:
+                is_defect = entry.raw_score >= thr
+                status = "БРАК" if is_defect else "НОРМА"
+
+                short_name = Path(entry.path).name
+
+                results_data["Имя файла"].append(short_name)
+                results_data["Полный путь"].append(entry.path)
+                results_data["Score (сырой)"].append(round(entry.raw_score, 6))
+                results_data["Порог отбраковки"].append(round(thr, 6))
+                results_data["Вердикт"].append(status)
+                results_data["Время инференса (мс)"].append(round(entry.elapsed_ms, 2))
+
+            df_results = pd.DataFrame(results_data)
+
+            # Записываем оба DataFrame в один Excel-файл на разные листы
+            with pd.ExcelWriter(path, engine='openpyxl') as writer:
+                df_model.to_excel(writer, sheet_name="Параметры модели", index=False)
+                df_results.to_excel(writer, sheet_name="Результаты", index=False)
+
+            QMessageBox.information(self, "Успех", f"Отчет успешно сохранен в файл:\n{path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка сохранения", f"Не удалось сохранить файл Excel:\n{e}")

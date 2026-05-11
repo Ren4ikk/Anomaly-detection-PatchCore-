@@ -20,6 +20,8 @@ scikit-learn = ">=1.8.0,<2.0.0"
 matplotlib = "^3.10.8"
 
 # -- GPU-версия: для локальной разработки --
+pandas = "^3.0.2"
+openpyxl = "^3.1.5"
 [tool.poetry.group.torch-gpu]
 optional = true
 
