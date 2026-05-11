@@ -3,11 +3,7 @@
 
 Класс PatchCoreDataset реализует загрузку изображений из произвольной папки
 с препроцессингом, идентичным оригинальной реализации авторов:
-  resize → 256×256, centre-crop → 224×224, ImageNet-нормализация.
-
-Ссылки:
-  Статья:           https://arxiv.org/pdf/2106.08265
-  Реализация авторов: https://github.com/amazon-science/patchcore-inspection
+resize 256×256, centre-crop 224×224, ImageNet-нормализация.
 """
 
 from __future__ import annotations
@@ -21,12 +17,9 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 
-# ─────────────────────────────────────────────
-# Константы препроцессинга (из статьи и репо)
-# ─────────────────────────────────────────────
+# Константы препроцессинга
 
 # Шаг 1: resize до 256, затем centre-crop до 224 — стандартный ImageNet pipeline.
-# Авторы используют именно эти значения (см. аргументы --resize 256 --imagesize 224).
 _RESIZE_SIZE: int = 256
 _CROP_SIZE: int = 224
 
@@ -52,7 +45,7 @@ def build_train_transform(
     Pipeline (соответствует оригинальному коду авторов):
       1. Resize до (resize × resize)  — сохраняет контекст патчей
       2. CenterCrop до (crop × crop)  — убирает края, устраняет артефакты resize
-      3. ToTensor                     — [0,255] uint8 → [0,1] float32
+      3. ToTensor                     — [0,255] uint8 - [0,1] float32
       4. Normalize(ImageNet)          — приводит к распределению, на котором
                                         обучался backbone
 
@@ -121,10 +114,6 @@ class PatchCoreDataset(Dataset):
                 f"Поддерживаемые расширения: {sorted(_IMAGE_EXTENSIONS)}"
             )
 
-    # ------------------------------------------------------------------
-    # Приватные методы
-    # ------------------------------------------------------------------
-
     @staticmethod
     def _collect_images(root: Path, *, recursive: bool) -> list[Path]:
         """Собирает пути ко всем изображениям в директории."""
@@ -134,12 +123,9 @@ class PatchCoreDataset(Dataset):
             for p in root.glob(pattern)
             if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS
         ]
-        # Детерминированный порядок — важно для воспроизводимости
         return sorted(paths)
 
-    # ------------------------------------------------------------------
     # Dataset API
-    # ------------------------------------------------------------------
 
     def __len__(self) -> int:
         return len(self.image_paths)
@@ -149,17 +135,12 @@ class PatchCoreDataset(Dataset):
         Возвращает один тензор изображения формы (C, H, W).
 
         Примечание: датасет только для train, поэтому маски / метки
-        аномалий не возвращаются (авторская реализация поступает так же).
+        аномалий не возвращаются
         """
         image_path = self.image_paths[idx]
 
-        # PIL гарантирует RGB — некоторые png могут быть RGBA или L
         image = Image.open(image_path).convert("RGB")
         return self.transform(image)
-
-    # ------------------------------------------------------------------
-    # Вспомогательные методы
-    # ------------------------------------------------------------------
 
     def __repr__(self) -> str:
         return (
@@ -171,9 +152,7 @@ class PatchCoreDataset(Dataset):
         )
 
 
-# ─────────────────────────────────────────────────────────
-# Фабричная функция для создания DataLoader (удобство)
-# ─────────────────────────────────────────────────────────
+# Фабричная функция для создания DataLoader
 
 def make_train_dataloader(
     root: Union[str, os.PathLike],
@@ -192,7 +171,7 @@ def make_train_dataloader(
         root:        Путь к папке с обучающими изображениями.
         batch_size:  Количество изображений на батч.
         num_workers: Число параллельных процессов загрузки.
-        transform:   Кастомный transform или None (→ стандартный).
+        transform:   Кастомный transform или None (стандартный).
         pin_memory:  Ускоряет перенос данных на GPU через pinned memory.
 
     Returns:

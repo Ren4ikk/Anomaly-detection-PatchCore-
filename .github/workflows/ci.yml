@@ -1,0 +1,217 @@
+# .github/workflows/ci.yml
+#
+# CI пайплайн для patchcore
+#
+# Три job-а:
+#   1. smoke-test    — проверка импортов (~1 мин)
+#   2. unit-tests    — быстрые тесты без backbone (~2 мин)
+#   3. integration   — полный пайплайн с WideResNet-50 (~5 мин)
+#                      запускается только на push/PR в main
+#
+# Стратегия кеширования:
+#   - .venv/             - кеш по хешу poetry.lock
+#   - ~/.cache/torch     - веса WideResNet-50 (~270 МБ, скачиваются один раз)
+#
+# Зависимости:
+#   - torch/torchvision  - Устанавливается напрямую через pip (CPU-версия)
+#   - faiss-cpu          - pip install -r requirements.txt
+#                          (faiss проблемно ставится через Poetry напрямую)
+
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+# Отменяем старые запуски при новом push в ту же ветку
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TORCH_HOME: ~/.cache/torch
+
+jobs:
+  # Job 1: Smoke test — проверка что пакет импортируется без ошибок
+  smoke-test:
+    name: Smoke Test (import check)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.3.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Cache Poetry virtualenv
+        id: cache-smoke
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-smoke-${{ runner.os }}-py3.13-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-smoke-${{ runner.os }}-py3.13-
+
+      # 1. Устанавливаем все зависимости, кроме тяжелой группы torch-gpu
+      - name: Install Poetry dependencies (without GPU torch)
+        if: steps.cache-smoke.outputs.cache-hit != 'true'
+        run: |
+          poetry install --without torch-gpu --with dev --no-root
+
+      # 2. Докидываем CPU-PyTorch вручную в тот же .venv
+      - name: Install CPU PyTorch via pip
+        if: steps.cache-smoke.outputs.cache-hit != 'true'
+        run: |
+          poetry run pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      # faiss-cpu ставится через pip отдельно
+      - name: Install faiss-cpu via pip
+        run: |
+          poetry run pip install -r requirements.txt
+
+      - name: Smoke test — check imports
+        run: |
+          poetry run python -c "
+          from patchcore import PatchCore, PatchCoreDataset, build_train_transform, Metrics, MetricResults
+          from patchcore.feature_extractor import FeatureExtractor
+          from patchcore.coreset_sampler import CoresetSampler
+          from patchcore.nearest_neighbor_index import NearestNeighborIndex
+          print('Все импорты успешны')
+          print(f'PatchCore: {PatchCore}')
+          "
+
+  # Job 2: Быстрые unit-тесты (без backbone, без GPU)
+  # Покрывают: dataset, metrics, coreset_sampler, nearest_neighbor_index
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.3.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Cache Poetry virtualenv
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-unit-${{ runner.os }}-py3.13-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-unit-${{ runner.os }}-py3.13-
+
+      - name: Cache PyTorch model weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch
+          key: torch-model-cache-wide-resnet50-v1
+
+      - name: Install Poetry dependencies (without GPU torch)
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          poetry install --without torch-gpu --with dev --no-root
+
+      - name: Install CPU PyTorch via pip
+        if: steps.cache-venv.outputs.cache-hit != 'true'
+        run: |
+          poetry run pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install faiss-cpu via pip
+        run: |
+          poetry run pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: |
+          poetry run pytest \
+            -m "not integration" \
+            --cov=patchcore \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            -v
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
+          fail_ci_if_error: false
+
+  # Job 3: Интеграционные тесты (полный пайплайн с backbone)
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.base_ref == 'main' || github.base_ref == 'master'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install Poetry
+        uses: snok/install-poetry@v1
+        with:
+          version: "2.3.1"
+          virtualenvs-create: true
+          virtualenvs-in-project: true
+
+      - name: Cache Poetry virtualenv
+        id: cache-venv-int
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-integration-${{ runner.os }}-py3.13-${{ hashFiles('poetry.lock') }}
+          restore-keys: |
+            venv-integration-${{ runner.os }}-py3.13-
+
+      - name: Cache PyTorch model weights
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/torch
+          key: torch-model-cache-wide-resnet50-v1
+
+      - name: Install Poetry dependencies (without GPU torch)
+        if: steps.cache-venv-int.outputs.cache-hit != 'true'
+        run: |
+          poetry install --without torch-gpu --with dev --no-root
+
+      - name: Install CPU PyTorch via pip
+        if: steps.cache-venv-int.outputs.cache-hit != 'true'
+        run: |
+          poetry run pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install faiss-cpu via pip
+        run: |
+          poetry run pip install -r requirements.txt
+
+      - name: Run integration tests
+        run: |
+          poetry run pytest \
+            -m "integration" \
+            --tb=long \
+            -v

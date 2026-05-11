@@ -1,16 +1,12 @@
 """
 Этап 1 — Инфраструктура: Метрики качества PatchCore.
 
-Реализует три метрики из оригинальной статьи (Roth et al., 2021):
+Реализует три метрики из оригинальной статьи:
   • Image-level AUROC  — основная метрика обнаружения аномалий
   • Pixel-level AUROC  — метрика точности сегментации (локализации)
   • PRO Score          — Per-Region Overlap, критически важна для
                          промышленных задач (оценивает каждый
                          связный компонент отдельно)
-
-Ссылки:
-  Статья:             https://arxiv.org/pdf/2106.08265  (Sec. 4, App. C)
-  Реализация авторов: https://github.com/amazon-science/patchcore-inspection
 """
 
 from __future__ import annotations
@@ -21,13 +17,12 @@ from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
 from scipy.ndimage import label as scipy_label
+from sklearn.metrics import precision_recall_curve
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import roc_curve
 
 
-# ──────────────────────────────────────────────────────
 # Датакласс для хранения результатов одного прогона
-# ──────────────────────────────────────────────────────
 
 @dataclass
 class MetricResults:
@@ -51,9 +46,7 @@ class MetricResults:
         )
 
 
-# ──────────────────────────────────────────────────────
 # Вспомогательные функции
-# ──────────────────────────────────────────────────────
 
 def _compute_pro(
     anomaly_maps: NDArray,  # (N, H, W) float — карты аномальности
@@ -68,7 +61,7 @@ def _compute_pro(
       2. На каждом изображении находим связные компоненты в GT-маске.
       3. Для каждого компонента вычисляем долю пикселей, покрытых
          бинаризованной картой аномальности (overlap).
-      4. Усредняем overlap по всем компонентам → TPR при данном пороге.
+      4. Усредняем overlap по всем компонентам - TPR при данном пороге.
       5. Вычисляем FPR как долю ложно-положительных нормальных пикселей.
       6. Интегрируем TPR по FPR ∈ [0, 0.3] и нормируем на 0.3
          (авторский протокол).
@@ -134,23 +127,21 @@ def _compute_pro(
     return pro_auc, fprs, pros
 
 
-# ──────────────────────────────────────────────────────
 # Основной класс метрик
-# ──────────────────────────────────────────────────────
 
 class Metrics:
     """
     Вычисляет метрики качества модели обнаружения аномалий.
 
     Поддерживаемые метрики:
-      • **Image-level AUROC** — AUC ROC-кривой по скорам на уровне
-        изображения. Основная метрика детекции (Section 4 статьи).
-      • **Pixel-level AUROC** — AUC ROC-кривой по скорам на уровне
-        пикселей. Метрика точности локализации (сегментации).
-      • **PRO Score (Per-Region Overlap)** — AUC кривой overlap/FPR
-        до FPR=0.3, нормированной на 0.3. Критически важна для
-        промышленных задач: оценивает каждый связный компонент
-        аномалии отдельно, не завышая скор за счёт крупных дефектов.
+    Image-level AUROC — AUC ROC-кривой по скорам на уровне
+    изображения. Основная метрика детекции.
+    Pixel-level AUROC — AUC ROC-кривой по скорам на уровне
+    пикселей. Метрика точности локализации (сегментации).
+    PRO Score (Per-Region Overlap) — AUC кривой overlap/FPR
+    до FPR=0.3, нормированной на 0.3. Критически важна для
+    промышленных задач: оценивает каждый связный компонент
+    аномалии отдельно, не завышая скор за счёт крупных дефектов.
 
     Пример использования::
 
@@ -177,7 +168,7 @@ class Metrics:
 
         Args:
             image_scores:   Скоры аномальности на уровне изображений, (N,).
-                            Больший скор → более аномально.
+                            Больший скор - более аномально.
             gt_labels:      Бинарные GT-метки изображений, (N,).
                             0 = нормальное, 1 = аномальное.
             anomaly_maps:   Тепловые карты аномальности, (N, H, W).
@@ -194,13 +185,13 @@ class Metrics:
 
         results = MetricResults()
 
-        # ── Image-level AUROC ──────────────────────────────────────
+        # -- Image-level AUROC --------------------------------------
         results.image_auroc = float(roc_auc_score(gt_labels, image_scores))
         image_fpr, image_tpr, _ = roc_curve(gt_labels, image_scores)
         results.image_fpr = image_fpr
         results.image_tpr = image_tpr
 
-        # ── Pixel-level AUROC и PRO ────────────────────────────────
+        # -- Pixel-level AUROC и PRO --------------------------------
         if anomaly_maps is not None and gt_masks is not None:
             anomaly_maps = np.asarray(anomaly_maps, dtype=np.float32)
             gt_masks = np.asarray(gt_masks, dtype=np.uint8)
@@ -226,9 +217,33 @@ class Metrics:
 
         return results
 
-    # ------------------------------------------------------------------
+    @staticmethod
+    def compute_f1_optimal_threshold(
+        y_true: NDArray,
+        y_scores: NDArray,
+    ) -> tuple[float, float]:
+        y_true_arr = np.asarray(y_true, dtype=np.int32).reshape(-1)
+        y_scores_arr = np.asarray(y_scores, dtype=np.float32).reshape(-1)
+        if y_true_arr.shape[0] != y_scores_arr.shape[0]:
+            raise ValueError("Размерности y_true и y_scores должны совпадать.")
+        if y_true_arr.shape[0] == 0:
+            raise ValueError("Пустые массивы для расчета F1-порога.")
+        if np.unique(y_true_arr).size < 2:
+            raise ValueError("Для F1-оптимизации нужны оба класса (0 и 1).")
+
+        precision, recall, thresholds = precision_recall_curve(y_true_arr, y_scores_arr)
+        if thresholds.size == 0:
+            raise ValueError("Не удалось вычислить пороги для precision-recall кривой.")
+
+        # precision/recall на 1 элемент длиннее thresholds, берем согласованные точки.
+        p = precision[:-1]
+        r = recall[:-1]
+        denom = p + r
+        f1 = np.where(denom > 0.0, 2.0 * p * r / denom, 0.0)
+        best_idx = int(np.argmax(f1))
+        return float(thresholds[best_idx]), float(f1[best_idx])
+
     # Валидация входных данных
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _validate_pixel_inputs(
