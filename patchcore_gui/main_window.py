@@ -378,13 +378,22 @@ class TrainingResultDialog(QDialog):
         for ax, (title, fpr, tpr, label_text), color in zip(axes, curves, colors):
             fpr_arr = np.asarray(fpr, dtype=np.float32)
             tpr_arr = np.asarray(tpr, dtype=np.float32)
+            is_pro = (title == "PRO Curve")
 
             ax.set_facecolor("#252526")
             ax.plot(fpr_arr, tpr_arr, color=color, lw=2, label=label_text)
-            ax.plot([0, 1], [0, 1], ":", color="#666666", lw=1)
+
+            if not is_pro:
+                # ROC: baseline случайного классификатора
+                ax.plot([0, 1], [0, 1], ":", color="#666666", lw=1)
+                ax.set_ylabel("TPR", color="#c0c0c0")
+            else:
+                # PRO: граница интегрирования FPR=0.3 (авторский протокол)
+                ax.axvline(x=0.3, color="#888888", linestyle="--", lw=1,
+                           label="FPR limit (0.3)")
+                ax.set_ylabel("Per-Region Overlap", color="#c0c0c0")
 
             ax.set_xlabel("FPR", color="#c0c0c0")
-            ax.set_ylabel("TPR / Overlap", color="#c0c0c0")
             ax.set_title(title, color="#e0e0e0")
             ax.tick_params(colors="#a0a0a0")
 
@@ -1141,7 +1150,8 @@ class MainWindow(QMainWindow):
         self._running = True
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
-        self._timer.start()
+        # Таймер НЕ стартуем здесь — запустим в _on_model_ready,
+        # когда модель полностью загружена и воркер готов принимать задачи.
 
     def _stop_conveyor(self) -> None:
         self._timer.stop()
@@ -1160,6 +1170,11 @@ class MainWindow(QMainWindow):
         self._score_max = float(score_max)
         self._model_auto_threshold_raw = float(threshold_raw)
         self._sync_threshold_ui_from_metadata()
+        # Модель загружена — теперь безопасно запускать таймер конвейера.
+        # Первый кадр отправляем немедленно (без ожидания первого тика).
+        if self._running:
+            self._on_timer_tick()
+            self._timer.start()
 
     def _on_timer_tick(self) -> None:
         if not self._running or self._worker is None:

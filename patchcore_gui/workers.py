@@ -313,15 +313,21 @@ class TrainingWorker(QThread):
             metrics_dict["pixel_tpr"] = results.pixel_tpr.tolist()
             metrics_dict["pro_score"] = float(results.pro_score)
 
-            # БЕЗОПАСНОЕ ИЗВЛЕЧЕНИЕ КРИВОЙ PRO:
-            # Разные версии библиотеки patchcore хранят массивы PRO по-разному.
-            if hasattr(results, "pro_fpr") and hasattr(results, "pro_tpr"):
-                metrics_dict["pro_fpr"] = results.pro_fpr.tolist()
-                metrics_dict["pro_tpr"] = results.pro_tpr.tolist()
-            elif hasattr(results, "pro_curve"):
-                # Некоторые реализации возвращают tuple/list вида (FPRs, PROs)
-                metrics_dict["pro_fpr"] = np.asarray(results.pro_curve[0]).tolist()
-                metrics_dict["pro_tpr"] = np.asarray(results.pro_curve[1]).tolist()
+            # Кривая PRO: вызываем _compute_pro напрямую, т.к. MetricResults
+            # не сохраняет промежуточные массивы fprs/pros из _compute_pro.
+            try:
+                from patchcore.metrics import _compute_pro
+                anomaly_idx = y_true == 1
+                if anomaly_idx.sum() > 0 and gt_masks_arr is not None:
+                    _, pro_fprs, pro_vals = _compute_pro(
+                        maps_arr[anomaly_idx],
+                        gt_masks_arr[anomaly_idx],
+                        num_thresh=100,
+                    )
+                    metrics_dict["pro_fpr"] = pro_fprs.tolist()
+                    metrics_dict["pro_tpr"] = pro_vals.tolist()
+            except Exception as _exc:
+                print(f"[TrainingWorker] PRO curve: {_exc}")
 
         print(f"[TrainingWorker] Image AUROC: {results.image_auroc:.4f}")
         if has_masks:
