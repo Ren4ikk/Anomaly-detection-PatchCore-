@@ -378,22 +378,13 @@ class TrainingResultDialog(QDialog):
         for ax, (title, fpr, tpr, label_text), color in zip(axes, curves, colors):
             fpr_arr = np.asarray(fpr, dtype=np.float32)
             tpr_arr = np.asarray(tpr, dtype=np.float32)
-            is_pro = (title == "PRO Curve")
 
             ax.set_facecolor("#252526")
             ax.plot(fpr_arr, tpr_arr, color=color, lw=2, label=label_text)
-
-            if not is_pro:
-                # ROC: baseline случайного классификатора
-                ax.plot([0, 1], [0, 1], ":", color="#666666", lw=1)
-                ax.set_ylabel("TPR", color="#c0c0c0")
-            else:
-                # PRO: граница интегрирования FPR=0.3 (авторский протокол)
-                ax.axvline(x=0.3, color="#888888", linestyle="--", lw=1,
-                           label="FPR limit (0.3)")
-                ax.set_ylabel("Per-Region Overlap", color="#c0c0c0")
+            ax.plot([0, 1], [0, 1], ":", color="#666666", lw=1)
 
             ax.set_xlabel("FPR", color="#c0c0c0")
+            ax.set_ylabel("TPR / Overlap", color="#c0c0c0")
             ax.set_title(title, color="#e0e0e0")
             ax.tick_params(colors="#a0a0a0")
 
@@ -441,6 +432,8 @@ class MainWindow(QMainWindow):
         self._running: bool = False
 
         self._worker: Optional[InferenceWorker] = None
+        self._preload_worker: Optional[InferenceWorker] = None
+        self._preload_model_path: str = ""
         self._training_worker: Optional[TrainingWorker] = None
         self._training_progress: Optional[QProgressDialog] = None
         self._training_busy: bool = False
@@ -1099,6 +1092,7 @@ class MainWindow(QMainWindow):
         self._model_label.setText(f"Модель:\n{path}")
         self._btn_model_info.setEnabled(True)
         self._sync_threshold_ui_from_metadata()
+        self._start_preload_worker(path)
 
     def _show_model_info(self) -> None:
         if self._model_state is None:
@@ -1139,19 +1133,59 @@ class MainWindow(QMainWindow):
         self._current_history_idx = -1
         self._apply_history_index()
 
-        device = select_device(self._device_pref)
-        self._worker = InferenceWorker(self._model_path, device)
-        self._worker.model_ready.connect(self._on_model_ready)
-        self._worker.inference_done.connect(self._on_inference_done)
-        self._worker.inference_failed.connect(self._on_inference_failed)
-        self._worker.finished.connect(self._on_worker_finished)
-        self._worker.start()
-
         self._running = True
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
-        # Таймер НЕ стартуем здесь — запустим в _on_model_ready,
-        # когда модель полностью загружена и воркер готов принимать задачи.
+
+        device = select_device(self._device_pref)
+        if (
+            self._preload_worker is not None
+            and self._preload_worker.isRunning()
+            and self._preload_model_path == self._model_path
+        ):
+            # Берём предзагрузочный воркер — модель уже загружается или загружена
+            self._worker = self._preload_worker
+            self._preload_worker = None
+            self._preload_model_path = ""
+            self._worker.inference_done.connect(self._on_inference_done)
+            self._worker.inference_failed.connect(self._on_inference_failed)
+            self._worker.finished.connect(self._on_worker_finished)
+            if self._worker.is_model_loaded:
+                # Модель уже готова — немедленно стартуем конвейер
+                self._on_timer_tick()
+                self._timer.start()
+            # Иначе _on_model_ready придёт чуть позже и запустит таймер
+        else:
+            # Предзагрузка недоступна — создаём воркер как обычно
+            self._discard_preload_worker()
+            self._worker = InferenceWorker(self._model_path, device)
+            self._worker.is_model_loaded = False
+            self._worker.model_ready.connect(self._on_model_ready)
+            self._worker.inference_done.connect(self._on_inference_done)
+            self._worker.inference_failed.connect(self._on_inference_failed)
+            self._worker.finished.connect(self._on_worker_finished)
+            self._worker.start()
+            # Таймер запустится в _on_model_ready
+
+    def _start_preload_worker(self, model_path: str) -> None:
+        """Запускает фоновую загрузку модели сразу при её выборе."""
+        self._discard_preload_worker()
+        device = select_device(self._device_pref)
+        w = InferenceWorker(model_path, device)
+        w.is_model_loaded = False
+        w.model_ready.connect(self._on_model_ready)
+        self._preload_worker = w
+        self._preload_model_path = model_path
+        w.start()
+        print(f"[Preload] Фоновая загрузка модели: {model_path}")
+
+    def _discard_preload_worker(self) -> None:
+        """Останавливает и удаляет предзагрузочный воркер."""
+        if self._preload_worker is not None:
+            self._preload_worker.request_stop()
+            self._preload_worker.wait(5_000)
+            self._preload_worker = None
+            self._preload_model_path = ""
 
     def _stop_conveyor(self) -> None:
         self._timer.stop()
@@ -1170,11 +1204,14 @@ class MainWindow(QMainWindow):
         self._score_max = float(score_max)
         self._model_auto_threshold_raw = float(threshold_raw)
         self._sync_threshold_ui_from_metadata()
-        # Модель загружена — теперь безопасно запускать таймер конвейера.
-        # Первый кадр отправляем немедленно (без ожидания первого тика).
-        if self._running:
+        # Если конвейер уже запущен и ждёт загрузки — стартуем таймер.
+        # Если это предзагрузка в фоне — ничего не делаем, запомнит is_model_loaded.
+        if self._running and self._worker is not None:
+            self._worker.is_model_loaded = True
             self._on_timer_tick()
             self._timer.start()
+        elif self._preload_worker is not None:
+            self._preload_worker.is_model_loaded = True
 
     def _on_timer_tick(self) -> None:
         if not self._running or self._worker is None:
@@ -1305,6 +1342,7 @@ class MainWindow(QMainWindow):
         """Перехватываем закрытие окна для сохранения UI и остановки процессов."""
         if self._running:
             self._stop_conveyor()
+        self._discard_preload_worker()
         self._save_ui_state()
         super().closeEvent(event)
 
@@ -1372,6 +1410,7 @@ class MainWindow(QMainWindow):
                 self._model_auto_threshold_raw = float(state.get("threshold", 0.5))
                 self._btn_model_info.setEnabled(True)
                 self._sync_threshold_ui_from_metadata()
+                self._start_preload_worker(path)
         except Exception as e:
             print(f"[UI State] Не удалось восстановить метаданные модели: {e}")
 
