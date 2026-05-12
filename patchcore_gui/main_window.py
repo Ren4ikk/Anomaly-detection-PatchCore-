@@ -51,6 +51,14 @@ from patchcore_gui.history_types import InferenceHistoryEntry
 from patchcore_gui.settings_dialog import SettingsDialog, TrainingSettings
 from patchcore_gui.workers import InferenceWorker, TrainingWorker, select_device
 
+try:
+    import matplotlib
+    matplotlib.use("Agg")  # non-interactive backend
+    import matplotlib.pyplot as plt
+    _MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    _MATPLOTLIB_AVAILABLE = False
+
 
 class ViewMode(IntEnum):
     ORIGINAL = 0
@@ -212,7 +220,198 @@ class ModelInfoDialog(QDialog):
         rows.append(("n_reweight_nn", str(state.get("n_reweight_nn", "—"))))
         rows.append(("gaussian_sigma", str(state.get("gaussian_sigma", "—"))))
 
+        # Metrics
+        m = state.get("metrics", {})
+        if m:
+            rows.append(("── Метрики качества ──", ""))
+            if "image_auroc" in m:
+                rows.append(("Image AUROC", f"{float(m['image_auroc']):.4f}"))
+            if "pixel_auroc" in m:
+                rows.append(("Pixel AUROC", f"{float(m['pixel_auroc']):.4f}"))
+            if "pro_score" in m:
+                rows.append(("PRO Score", f"{float(m['pro_score']):.4f}"))
+
         return rows
+
+
+
+class TrainingResultDialog(QDialog):
+    """
+    Диалог результатов обучения: параметры модели + метрики + ROC-кривые.
+    Показывается сразу после успешного завершения TrainingWorker.
+    """
+
+    def __init__(
+        self,
+        threshold: float,
+        score_min: float,
+        score_max: float,
+        save_path: str,
+        metrics: dict,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Обучение завершено")
+        self.setModal(True)
+        self.resize(640, 520)
+        self._metrics = metrics
+        self._build_ui(threshold, score_min, score_max, save_path, metrics)
+
+    def _build_ui(
+        self,
+        threshold: float,
+        score_min: float,
+        score_max: float,
+        save_path: str,
+        metrics: dict,
+    ) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(8)
+
+        # Header
+        header = QLabel(f"<b>Модель сохранена:</b> {save_path}")
+        header.setWordWrap(True)
+        header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        root.addWidget(header)
+
+        # Tabs: параметры | метрики и графики
+        tabs = QTabWidget(self)
+        tabs.addTab(self._build_params_tab(threshold, score_min, score_max), "Параметры")
+        if metrics:
+            tabs.addTab(self._build_metrics_tab(metrics), "Метрики")
+            if _MATPLOTLIB_AVAILABLE:
+                charts_tab = self._build_charts_tab(metrics)
+                if charts_tab is not None:
+                    tabs.addTab(charts_tab, "Графики ROC")
+        root.addWidget(tabs)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
+        buttons.rejected.connect(self.accept)
+        root.addWidget(buttons)
+
+    def _build_params_tab(
+        self, threshold: float, score_min: float, score_max: float
+    ) -> QWidget:
+        page = QWidget(self)
+        lay = QVBoxLayout(page)
+        table = QTableWidget(3, 2, page)
+        table.setHorizontalHeaderLabels(["Параметр", "Значение"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(table.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        rows = [
+            ("Порог (threshold)", f"{threshold:.6f}"),
+            ("score_min", f"{score_min:.6f}"),
+            ("score_max", f"{score_max:.6f}"),
+        ]
+        for i, (k, v) in enumerate(rows):
+            table.setItem(i, 0, QTableWidgetItem(k))
+            table.setItem(i, 1, QTableWidgetItem(v))
+        table.resizeColumnToContents(0)
+        lay.addWidget(table)
+        return page
+
+    def _build_metrics_tab(self, metrics: dict) -> QWidget:
+        page = QWidget(self)
+        lay = QVBoxLayout(page)
+
+        rows = []
+        if "image_auroc" in metrics:
+            rows.append(("Image AUROC", f"{float(metrics['image_auroc']):.4f}"))
+        if "pixel_auroc" in metrics:
+            rows.append(("Pixel AUROC", f"{float(metrics['pixel_auroc']):.4f}"))
+        if "pro_score" in metrics:
+            rows.append(("PRO Score", f"{float(metrics['pro_score']):.4f}"))
+
+        table = QTableWidget(len(rows), 2, page)
+        table.setHorizontalHeaderLabels(["Метрика", "Значение"])
+        table.horizontalHeader().setStretchLastSection(True)
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(table.EditTrigger.NoEditTriggers)
+        table.setAlternatingRowColors(True)
+        for i, (k, v) in enumerate(rows):
+            k_item = QTableWidgetItem(k)
+            v_item = QTableWidgetItem(v)
+            v_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            table.setItem(i, 0, k_item)
+            table.setItem(i, 1, v_item)
+        table.resizeColumnToContents(0)
+        lay.addWidget(table)
+
+        if not _MATPLOTLIB_AVAILABLE:
+            lay.addWidget(QLabel("Установите matplotlib для отображения графиков."))
+        return page
+
+    def _build_charts_tab(self, metrics: dict) -> "QWidget | None":
+        """Строит вкладку с графиками ROC/PRO через matplotlib → PNG → QLabel."""
+        import io
+        import numpy as np
+        from PyQt6.QtGui import QPixmap
+
+        curves = []
+        # Собираем все доступные графики
+        if "image_fpr" in metrics and "image_tpr" in metrics:
+            auroc = metrics.get("image_auroc", 0.0)
+            curves.append(("Image ROC", metrics["image_fpr"], metrics["image_tpr"], f"AUC = {auroc:.4f}"))
+
+        if "pixel_fpr" in metrics and "pixel_tpr" in metrics:
+            auroc = metrics.get("pixel_auroc", 0.0)
+            curves.append(("Pixel ROC", metrics["pixel_fpr"], metrics["pixel_tpr"], f"AUC = {auroc:.4f}"))
+
+        if "pro_fpr" in metrics and "pro_tpr" in metrics:
+            pro_score = metrics.get("pro_score", 0.0)
+            curves.append(("PRO Curve", metrics["pro_fpr"], metrics["pro_tpr"], f"PRO = {pro_score:.4f}"))
+
+        if not curves:
+            return None
+
+        # Динамически создаем сабплоты в зависимости от количества графиков
+        fig, axes = plt.subplots(1, len(curves), figsize=(5 * len(curves), 4), dpi=96)
+        if len(curves) == 1:
+            axes = [axes]
+        fig.patch.set_facecolor("#1e1e20")
+
+        # Добавили третий цвет (зеленоватый) для графика PRO
+        colors = ["#6ba3d6", "#f0a060", "#a0d66b"]
+
+        for ax, (title, fpr, tpr, label_text), color in zip(axes, curves, colors):
+            fpr_arr = np.asarray(fpr, dtype=np.float32)
+            tpr_arr = np.asarray(tpr, dtype=np.float32)
+
+            ax.set_facecolor("#252526")
+            ax.plot(fpr_arr, tpr_arr, color=color, lw=2, label=label_text)
+            ax.plot([0, 1], [0, 1], ":", color="#666666", lw=1)
+
+            ax.set_xlabel("FPR", color="#c0c0c0")
+            ax.set_ylabel("TPR / Overlap", color="#c0c0c0")
+            ax.set_title(title, color="#e0e0e0")
+            ax.tick_params(colors="#a0a0a0")
+
+            for spine in ax.spines.values():
+                spine.set_edgecolor("#555555")
+
+            ax.legend(facecolor="#2e2e32", edgecolor="#555555", labelcolor="#e0e0e0")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1.05)
+
+        plt.tight_layout(pad=1.5)
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
+        plt.close(fig)
+        buf.seek(0)
+
+        page = QWidget(self)
+        lay = QVBoxLayout(page)
+        img_label = QLabel(page)
+        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        pm = QPixmap()
+        pm.loadFromData(buf.read())
+        img_label.setPixmap(pm)
+        lay.addWidget(img_label)
+
+        return page
 
 
 class MainWindow(QMainWindow):
@@ -821,6 +1020,8 @@ class MainWindow(QMainWindow):
             self._train_save_path,
             device,
             self._training_settings,
+            metrics_val_dir=self._training_settings.metrics_val_dir,
+            metrics_mask_dir=self._training_settings.metrics_mask_dir,
         )
         self._training_worker.training_success.connect(self._on_training_success)
         self._training_worker.training_failed.connect(self._on_training_failed)
@@ -833,22 +1034,30 @@ class MainWindow(QMainWindow):
             if dlg.settings is not None:
                 self._training_settings = dlg.settings
 
-    def _on_training_success(self, threshold: float, score_min: float, score_max: float) -> None:
+    def _on_training_success(
+        self, threshold: float, score_min: float, score_max: float, metrics: dict
+    ) -> None:
         self._close_training_progress()
         self._set_training_locked(False)
+
+        if self._model_state is None:
+            self._model_state = {}
+        self._model_state["metrics"] = metrics
+
         self._model_auto_threshold_raw = float(threshold)
         self._score_min = float(score_min)
         self._score_max = float(score_max)
         self._sync_threshold_ui_from_metadata()
-        QMessageBox.information(
-            self,
-            "Обучение завершено",
-            f"Порог (threshold): {threshold:.6f}\n"
-            f"score_min: {score_min:.6f}\n"
-            f"score_max: {score_max:.6f}\n\n"
-            f"Файл: {self._train_save_path}",
-        )
         self._append_training_success_log(threshold)
+        dlg = TrainingResultDialog(
+            threshold=threshold,
+            score_min=score_min,
+            score_max=score_max,
+            save_path=self._train_save_path,
+            metrics=metrics,
+            parent=self,
+        )
+        dlg.exec()
 
     def _on_training_failed(self, message: str) -> None:
         self._close_training_progress()
@@ -1152,7 +1361,7 @@ class MainWindow(QMainWindow):
             print(f"[UI State] Не удалось восстановить метаданные модели: {e}")
 
     def _export_to_excel(self) -> None:
-        """Собирает параметры модели и историю инференса и сохраняет в Excel."""
+        """Собирает параметры модели, результаты инференса и метрики качества в Excel."""
         if not self._history:
             QMessageBox.warning(self, "Пусто", "Нет данных для экспорта. Сначала запустите конвейер.")
             return
@@ -1180,50 +1389,68 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # 1. Формируем лист с параметрами модели
-            model_data = {
+            # --- 1. Лист: Параметры модели ---
+            model_info = {
                 "Параметр": ["Путь к модели"],
                 "Значение": [self._model_path]
             }
             if self._model_state:
-                # Извлекаем все базовые типы из словаря состояния модели
                 for k, v in self._model_state.items():
-                    if isinstance(v, (int, float, str, tuple, list)):
-                        model_data["Параметр"].append(k)
-                        model_data["Значение"].append(str(v))
+                    # Исключаем словарь метрик (он пойдет на отдельный лист)
+                    # и сложные объекты, оставляя только базовые параметры
+                    if k != "metrics" and isinstance(v, (int, float, str, tuple, list)):
+                        model_info["Параметр"].append(k)
+                        model_info["Значение"].append(str(v))
+            df_model = pd.DataFrame(model_info)
 
-            df_model = pd.DataFrame(model_data)
+            # --- 2. Лист: Метрики качества (НОВОЕ) ---
+            metrics_data = {"Показатель": [], "Значение": []}
+            if self._model_state and "metrics" in self._model_state:
+                m = self._model_state["metrics"]
 
-            # 2. Формируем лист с результатами
+                # Собираем только скалярные значения (основные метрики)
+                mapping = {
+                    "image_auroc": "Image AUROC (Global)",
+                    "pixel_auroc": "Pixel AUROC (Localization)",
+                    "pro_score": "PRO Score",
+                }
+
+                for key, label in mapping.items():
+                    if key in m:
+                        metrics_data["Показатель"].append(label)
+                        metrics_data["Значение"].append(round(float(m[key]), 4))
+
+            # Если метрик нет (модель не валидировалась), добавим пояснение
+            if not metrics_data["Показатель"]:
+                metrics_data["Показатель"].append("Статус")
+                metrics_data["Значение"].append("Метрики не рассчитывались")
+
+            df_metrics = pd.DataFrame(metrics_data)
+
+            # --- 3. Лист: Результаты инференса ---
             results_data = {
                 "Имя файла": [],
-                "Полный путь": [],
                 "Score (сырой)": [],
-                "Порог отбраковки": [],
                 "Вердикт": [],
-                "Время инференса (мс)": []
+                "Время (мс)": [],
+                "Полный путь": []
             }
 
             thr = self._current_threshold_raw()
-
             for entry in self._history:
                 is_defect = entry.raw_score >= thr
-                status = "БРАК" if is_defect else "НОРМА"
-
-                short_name = Path(entry.path).name
-
-                results_data["Имя файла"].append(short_name)
-                results_data["Полный путь"].append(entry.path)
+                results_data["Имя файла"].append(Path(entry.path).name)
                 results_data["Score (сырой)"].append(round(entry.raw_score, 6))
-                results_data["Порог отбраковки"].append(round(thr, 6))
-                results_data["Вердикт"].append(status)
-                results_data["Время инференса (мс)"].append(round(entry.elapsed_ms, 2))
+                results_data["Вердикт"].append("БРАК" if is_defect else "НОРМА")
+                results_data["Время (мс)"].append(round(entry.elapsed_ms, 2))
+                results_data["Полный путь"].append(entry.path)
 
             df_results = pd.DataFrame(results_data)
 
-            # Записываем оба DataFrame в один Excel-файл на разные листы
+            # --- Запись в файл ---
             with pd.ExcelWriter(path, engine='openpyxl') as writer:
                 df_model.to_excel(writer, sheet_name="Параметры модели", index=False)
+                df_metrics.to_excel(writer, sheet_name="Метрики качества", index=False)
                 df_results.to_excel(writer, sheet_name="Результаты", index=False)
 
             QMessageBox.information(self, "Успех", f"Отчет успешно сохранен в файл:\n{path}")

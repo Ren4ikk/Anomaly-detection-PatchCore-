@@ -131,6 +131,11 @@ class PatchCore:
         self.score_max: float = 1.0
         self.threshold: float = 0.5  # обновляется через compute_score_range()
 
+        # Метрики качества — заполняются через save_metrics() после оценки
+        # Ключи: "image_auroc", "pixel_auroc", "pro_score",
+        #        "image_fpr", "image_tpr", "pixel_fpr", "pixel_tpr"
+        self.metrics: dict = {}
+
     def fit(self, train_image_dir: str) -> None:
         """
         Обучение PatchCore: строит банк памяти M_C из нормальных изображений.
@@ -460,6 +465,17 @@ class PatchCore:
 
         return smoothed.astype(np.float32)
 
+    def save_metrics(self, metrics_dict: dict) -> None:
+        """
+        Сохраняет результаты оценки качества модели.
+
+        Args:
+            metrics_dict: Словарь с ключами image_auroc, pixel_auroc, pro_score,
+                         image_fpr, image_tpr, pixel_fpr, pixel_tpr.
+                         Pixel-метрики опциональны (только если были GT-маски).
+        """
+        self.metrics = dict(metrics_dict)
+
     def save(self, path: str) -> None:
         """
         Сохраняет состояние модели (корсет M_C и метаданные).
@@ -485,6 +501,7 @@ class PatchCore:
             "backbone_name": self.backbone_name,
             "layers": self.layers,
             "patch_size": self.patch_size,
+            "metrics": self.metrics,
         }
         torch.save(state, path)
         print(f"[PatchCore] Модель сохранена: {path}")
@@ -514,6 +531,7 @@ class PatchCore:
             patch_size=self.patch_size,
         )
 
+        self.metrics = state.get("metrics", {})
         self.nn_index.fit(state["memory_bank"])
         print(f"[PatchCore] Модель загружена: {path}")
         print(f"  Размер M_C  : {state['memory_bank'].shape}")

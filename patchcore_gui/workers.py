@@ -140,8 +140,8 @@ class TrainingWorker(QThread):
     """
 
     training_started = pyqtSignal()
-    # threshold, score_min, score_max (сырые значения с модели после compute_score_range)
-    training_success = pyqtSignal(float, float, float)
+    # threshold, score_min, score_max, metrics_dict
+    training_success = pyqtSignal(float, float, float, dict)
     training_finished = pyqtSignal()
     training_failed = pyqtSignal(str)
 
@@ -151,6 +151,8 @@ class TrainingWorker(QThread):
         save_path: str,
         device: str,
         settings: TrainingSettings,
+        metrics_val_dir: str | None = None,
+        metrics_mask_dir: str | None = None,
         parent: Optional[QObject] = None,
     ) -> None:
         super().__init__(parent)
@@ -158,6 +160,8 @@ class TrainingWorker(QThread):
         self._save_path = save_path
         self._device = device
         self._settings = settings
+        self._metrics_val_dir = metrics_val_dir
+        self._metrics_mask_dir = metrics_mask_dir
 
     def run(self) -> None:
         self.training_started.emit()
@@ -183,11 +187,21 @@ class TrainingWorker(QThread):
             model.compute_score_range(self._train_image_dir)
             if self._settings.threshold_mode == "f1_optimal":
                 self._apply_f1_threshold(model=model)
+
+            # Вычисляем метрики если указана validation директория
+            metrics_dict: dict = {}
+            if self._metrics_val_dir:
+                try:
+                    metrics_dict = self._compute_metrics(model)
+                    model.save_metrics(metrics_dict)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[TrainingWorker] Не удалось вычислить метрики: {exc}")
+
             model.save(self._save_path)
             thr = float(model.threshold)
             smin = float(model.score_min)
             smax = float(model.score_max)
-            self.training_success.emit(thr, smin, smax)
+            self.training_success.emit(thr, smin, smax, metrics_dict)
         except Exception as exc:  # noqa: BLE001
             self.training_failed.emit(str(exc))
         else:
@@ -237,6 +251,84 @@ class TrainingWorker(QThread):
             f1_thr, _ = Metrics.compute_f1_optimal_threshold(y_true_image, y_scores_image)
 
         model.threshold = float(f1_thr)
+
+    def _compute_metrics(self, model: "PatchCore") -> dict:
+        """
+        Прогоняет validation-данные через модель и вычисляет метрики.
+        Image AUROC всегда. Pixel AUROC и PRO — только если есть GT-маски.
+        """
+        from patchcore.metrics import Metrics
+
+        val_images, val_labels, val_masks = self._load_validation_data(
+            self._metrics_val_dir,
+            self._metrics_mask_dir,
+        )
+        if len(val_images) == 0:
+            raise ValueError("Validation папка для метрик не содержит изображений.")
+
+        image_scores: list[float] = []
+        anomaly_maps_list: list[np.ndarray] = []
+
+        print(f"[TrainingWorker] Вычисление метрик ({len(val_images)} изображений)...")
+        for i in range(0, len(val_images), model.batch_size):
+            batch = torch.stack(val_images[i : i + model.batch_size])
+            batch_results = model.predict(batch)
+            for r in batch_results:
+                image_scores.append(float(r.image_score))
+                anomaly_maps_list.append(np.asarray(r.anomaly_map, dtype=np.float32))
+
+        y_true = np.asarray(val_labels, dtype=np.int32)
+        y_scores = np.asarray(image_scores, dtype=np.float32)
+
+        # GT-маски: собираем только если они есть
+        gt_masks_arr = None
+        maps_arr = None
+        has_masks = any(m is not None for m in val_masks)
+        if has_masks:
+            gt_list = []
+            map_list = []
+            for idx, pred in enumerate(anomaly_maps_list):
+                mask = val_masks[idx]
+                gt_list.append(mask if mask is not None else np.zeros(pred.shape, dtype=np.uint8))
+                map_list.append(pred)
+            gt_masks_arr = np.stack(gt_list)
+            maps_arr = np.stack(map_list)
+
+        results = Metrics().compute(
+            image_scores=y_scores,
+            gt_labels=y_true,
+            anomaly_maps=maps_arr,
+            gt_masks=gt_masks_arr,
+        )
+
+        metrics_dict: dict = {
+            "image_auroc": float(results.image_auroc),
+            "image_fpr": results.image_fpr.tolist(),
+            "image_tpr": results.image_tpr.tolist(),
+        }
+
+        if has_masks and results.pixel_auroc > 0:
+            metrics_dict["pixel_auroc"] = float(results.pixel_auroc)
+            metrics_dict["pixel_fpr"] = results.pixel_fpr.tolist()
+            metrics_dict["pixel_tpr"] = results.pixel_tpr.tolist()
+            metrics_dict["pro_score"] = float(results.pro_score)
+
+            # БЕЗОПАСНОЕ ИЗВЛЕЧЕНИЕ КРИВОЙ PRO:
+            # Разные версии библиотеки patchcore хранят массивы PRO по-разному.
+            if hasattr(results, "pro_fpr") and hasattr(results, "pro_tpr"):
+                metrics_dict["pro_fpr"] = results.pro_fpr.tolist()
+                metrics_dict["pro_tpr"] = results.pro_tpr.tolist()
+            elif hasattr(results, "pro_curve"):
+                # Некоторые реализации возвращают tuple/list вида (FPRs, PROs)
+                metrics_dict["pro_fpr"] = np.asarray(results.pro_curve[0]).tolist()
+                metrics_dict["pro_tpr"] = np.asarray(results.pro_curve[1]).tolist()
+
+        print(f"[TrainingWorker] Image AUROC: {results.image_auroc:.4f}")
+        if has_masks:
+            print(f"[TrainingWorker] Pixel AUROC: {results.pixel_auroc:.4f}")
+            print(f"[TrainingWorker] PRO Score  : {results.pro_score:.4f}")
+
+        return metrics_dict
 
     @staticmethod
     def _load_validation_data(

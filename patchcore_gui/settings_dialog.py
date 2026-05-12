@@ -40,6 +40,9 @@ class TrainingSettings:
     validation_dir: str | None = None
     gt_mask_dir: str | None = None
     threshold_objective: str = "image_f1"
+    # Директории для вычисления метрик (независимо от настроек порога)
+    metrics_val_dir: str | None = None
+    metrics_mask_dir: str | None = None
 
 
 class SettingsDialog(QDialog):
@@ -61,6 +64,7 @@ class SettingsDialog(QDialog):
         tabs = QTabWidget(self)
         tabs.addTab(self._build_arch_tab(), "Архитектура и Гиперпараметры")
         tabs.addTab(self._build_threshold_tab(), "Настройки порога")
+        tabs.addTab(self._build_metrics_tab(), "Оценка качества")
         root.addWidget(tabs)
 
         buttons = QDialogButtonBox(
@@ -199,6 +203,57 @@ class SettingsDialog(QDialog):
         root.addStretch()
         return page
 
+    def _build_metrics_tab(self) -> QWidget:
+        """
+        Вкладка настройки вычисления метрик после обучения.
+        Image AUROC — всегда. Pixel AUROC и PRO — только с GT-масками.
+        """
+        page = QWidget(self)
+        root = QVBoxLayout(page)
+        root.setSpacing(8)
+
+        info = QLabel("Image AUROC (always). Pixel AUROC & PRO Score - with GT masks.", page)
+        info.setWordWrap(True)
+        info.setStyleSheet("color: #a0b0c0; font-size: 11px;")
+        root.addWidget(info)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        # Validation dir
+        self._btn_metrics_val = QPushButton("Выбрать папку Validation", page)
+        self._btn_metrics_val.clicked.connect(self._choose_metrics_val_dir)
+        self._metrics_val_label = QLabel("Не выбрано", page)
+        self._metrics_val_label.setWordWrap(True)
+        val_col = QVBoxLayout()
+        val_col.addWidget(self._btn_metrics_val)
+        val_col.addWidget(self._metrics_val_label)
+        form.addRow("Validation:", self._wrap_layout(val_col, page))
+
+        # GT masks dir (optional)
+        self._btn_metrics_mask = QPushButton("Выбрать папку GT Масок (опционально)", page)
+        self._btn_metrics_mask.clicked.connect(self._choose_metrics_mask_dir)
+        self._metrics_mask_label = QLabel("Не выбрано", page)
+        self._metrics_mask_label.setWordWrap(True)
+        mask_col = QVBoxLayout()
+        mask_col.addWidget(self._btn_metrics_mask)
+        mask_col.addWidget(self._metrics_mask_label)
+        form.addRow("GT Маски:", self._wrap_layout(mask_col, page))
+
+        root.addLayout(form)
+        root.addStretch()
+        return page
+
+    def _choose_metrics_val_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Выберите Validation папку для метрик")
+        if path:
+            self._set_path_label(self._metrics_val_label, path)
+
+    def _choose_metrics_mask_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку GT масок для метрик")
+        if path:
+            self._set_path_label(self._metrics_mask_label, path)
+
     @staticmethod
     def _wrap_layout(layout: QVBoxLayout, parent: QWidget) -> QWidget:
         w = QWidget(parent)
@@ -222,6 +277,8 @@ class SettingsDialog(QDialog):
         self.radio_3sigma.setChecked(not is_f1)
         self._set_path_label(self._val_path_label, s.validation_dir or "")
         self._set_path_label(self._mask_path_label, s.gt_mask_dir or "")
+        self._set_path_label(self._metrics_val_label, s.metrics_val_dir or "")
+        self._set_path_label(self._metrics_mask_label, s.metrics_mask_dir or "")
         self._objective_combo.setCurrentIndex(0 if s.threshold_objective == "image_f1" else 1)
         self._on_threshold_type_changed()
         self._on_f1_target_changed()
@@ -296,6 +353,15 @@ class SettingsDialog(QDialog):
             validation_dir = None
             gt_mask_dir = None
 
+        metrics_val = (
+            None if self._metrics_val_label.text() == "Не выбрано"
+            else self._metrics_val_label.text() or None
+        )
+        metrics_mask = (
+            None if self._metrics_mask_label.text() == "Не выбрано"
+            else self._metrics_mask_label.text() or None
+        )
+
         self._settings = TrainingSettings(
             backbone_name=self._backbone_combo.currentText(),
             layers=layers,
@@ -309,6 +375,8 @@ class SettingsDialog(QDialog):
             validation_dir=validation_dir,
             gt_mask_dir=gt_mask_dir,
             threshold_objective=objective,
+            metrics_val_dir=metrics_val,
+            metrics_mask_dir=metrics_mask,
         )
         self.accept()
 
