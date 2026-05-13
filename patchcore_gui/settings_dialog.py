@@ -197,7 +197,9 @@ class SettingsDialog(QDialog):
         self._objective_combo = QComboBox(self._f1_box)
         self._objective_combo.addItems(["Image-level F1", "Pixel-level F1"])
         self._objective_combo.currentIndexChanged.connect(self._on_f1_target_changed)
-        form.addRow("Цель оптимизации:", self._objective_combo)
+        self._objective_combo.setVisible(False)  # временно скрыт
+        self._objective_label = QLabel("Image-level F1", self._f1_box)
+        form.addRow("Цель оптимизации:", self._objective_label)
 
         root.addWidget(self._f1_box)
         root.addStretch()

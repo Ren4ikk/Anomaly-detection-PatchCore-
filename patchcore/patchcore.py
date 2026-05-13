@@ -536,7 +536,7 @@ class PatchCore:
         print(f"[PatchCore] Модель загружена: {path}")
         print(f"  Размер M_C  : {state['memory_bank'].shape}")
         print(f"  Диапазон    : [{self.score_min:.4f}, {self.score_max:.4f}]")
-        print(f"  Порог (3σ)  : {self.threshold:.4f}")
+        print(f"  Порог       : {self.threshold:.4f}")
 
     def __repr__(self) -> str:
         status = "fitted" if self.nn_index.is_fitted else "not fitted"

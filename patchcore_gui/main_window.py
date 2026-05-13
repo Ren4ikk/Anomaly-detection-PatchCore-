@@ -571,10 +571,10 @@ class MainWindow(QMainWindow):
         self._btn_save_model_as = QPushButton("Сохранить модель как…")
         self._btn_save_model_as.clicked.connect(self._choose_train_save_path)
 
-        self._btn_train = QPushButton("▶ ОБУЧИТЬ")
+        self._btn_train = QPushButton("ОБУЧИТЬ")
         self._btn_train.setProperty("role", "train")
         self._btn_train.clicked.connect(self._start_training)
-        self._btn_training_settings = QPushButton("⚙ Настройки обучения")
+        self._btn_training_settings = QPushButton("Настройки обучения")
         self._btn_training_settings.clicked.connect(self._open_training_settings)
 
         lay.addWidget(self._train_dir_label)
