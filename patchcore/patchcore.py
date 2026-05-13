@@ -95,7 +95,7 @@ class PatchCore:
         device: str | torch.device = "cpu",
         coreset_ratio: float = 0.10,
         batch_size: int = 32,
-        num_workers: int = 4,
+        num_workers: int = 1,
         use_gpu_faiss: bool = False,
         n_reweight_nn: int = _REWEIGHTING_NEIGHBOURS,
         gaussian_sigma: float = _GAUSSIAN_SIGMA,

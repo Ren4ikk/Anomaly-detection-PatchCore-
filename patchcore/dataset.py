@@ -157,7 +157,7 @@ class PatchCoreDataset(Dataset):
 def make_train_dataloader(
     root: Union[str, os.PathLike],
     batch_size: int = 32,
-    num_workers: int = 4,
+    num_workers: int = 1,
     transform: Optional[Callable] = None,
     pin_memory: bool = True,
 ) -> DataLoader:
