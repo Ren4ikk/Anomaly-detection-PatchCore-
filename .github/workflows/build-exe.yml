@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies (without GPU torch)
         run: |
           poetry install --without torch-gpu --with dev --no-root
-          poetry run pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+          poetry run pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           poetry run pip install -r requirements.txt
           poetry run pip install pyinstaller
 

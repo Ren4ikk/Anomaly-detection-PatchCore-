@@ -1,20 +1,8 @@
-"""
-Точка входа: десктопное приложение визуального контроля на базе PatchCore.
-
-Запуск из корня репозитория::
-
-    python main.py
-
-Опционально зафиксировать устройство (по умолчанию — auto: CUDA при наличии)::
-
-    set PATCHCORE_GUI_DEVICE=cpu
-    python main.py
-"""
-
 from __future__ import annotations
 
 import os
 import sys
+import multiprocessing
 
 from PyQt6.QtWidgets import QApplication
 
@@ -36,4 +24,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    # ВАЖНО: Эта строчка предотвращает бесконечное открытие новых окон 
+    # в скомпилированном .exe файле на Windows при использовании PyTorch/multiprocessing!
+    # Должна идти самой первой инструкцией внутри блока __main__.
+    multiprocessing.freeze_support()
+    
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        print("КРИТИЧЕСКАЯ ОШИБКА ПРИ ЗАПУСКЕ:")
+        traceback.print_exc()
+        input("\nНажмите Enter для выхода...")
