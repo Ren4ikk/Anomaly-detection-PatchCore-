@@ -49,63 +49,46 @@ class MetricResults:
 # Вспомогательные функции
 
 def _compute_pro(
-    anomaly_maps: NDArray,  # (N, H, W) — ВСЕ карты тест-сета (норма + брак)
-    gt_masks: NDArray,       # (N, H, W) — GT-маски; нули для нормальных
-    num_thresh: int = 100,
+        anomaly_maps: NDArray,
+        gt_masks: NDArray,
+        num_thresh: int = 100,
 ) -> tuple[float, NDArray, NDArray]:
-    """
-    Вычисляет PRO (Per-Region Overlap) Score.
-
-    Алгоритм (Appendix C статьи):
-      1. Для каждого порога t пробегаем по всем изображениям.
-      2. На каждом изображении находим связные компоненты в GT-маске.
-      3. Для каждого компонента вычисляем долю пикселей, покрытых
-         бинаризованной картой аномальности (overlap).
-      4. Усредняем overlap по всем компонентам - TPR при данном пороге.
-      5. Вычисляем FPR как долю ложно-положительных нормальных пикселей.
-      6. Интегрируем TPR по FPR ∈ [0, 0.3] и нормируем на 0.3
-         (авторский протокол).
-
-    Args:
-        anomaly_maps: ВСЕ карты тест-сета (N, H, W) — норма + брак.
-                      Нормальные изображения вносят пиксели в знаменатель FPR.
-        gt_masks:     GT-маски (N, H, W). Для нормальных изображений — нулевые.
-        num_thresh:   Число равномерно распределённых порогов.
-
-    Returns:
-        Кортеж (pro_auc, all_fprs, all_pros).
-    """
     gt_masks = gt_masks.astype(bool)
+    normal_masks = ~gt_masks
+    total_normal_pixels = int(normal_masks.sum())
 
-    # Пороги по перцентилям всех карт (норма + брак) — гарантируют равномерное
-    # покрытие реального распределения скоров и плотное заполнение FPR ∈ [0, 0.3].
-    thresholds = np.percentile(anomaly_maps, np.linspace(0, 100, num=num_thresh))
+    # 1. Оптимизация по памяти: берем подвыборку пикселей для расчета перцентилей.
+    # Шага 10 или 100 достаточно, чтобы идеально восстановить распределение.
+    sampled_maps = anomaly_maps.flatten()[::10]
+    thresholds = np.percentile(sampled_maps, np.linspace(0, 100, num=num_thresh))
     thresholds = np.unique(thresholds)
+
+    # 2. Оптимизация по скорости: предвычисляем связные компоненты для ВСЕХ масок ОДИН РАЗ
+    image_components = []
+    for gt_mask in gt_masks:
+        labeled, n_components = scipy_label(gt_mask)
+        # Сохраняем маску для каждой компоненты
+        comps = [labeled == i for i in range(1, n_components + 1)]
+        image_components.append(comps)
 
     all_fprs: list[float] = []
     all_pros: list[float] = []
 
+    # 3. Основной цикл по порогам
     for thresh in thresholds:
-        binary_maps = anomaly_maps >= thresh  # (N, H, W)
+        binary_maps = anomaly_maps >= thresh  # Векторизовано: (N, H, W)
 
+        # Подсчет FP сразу по всему батчу (супер быстро)
+        fp_pixels = int((binary_maps & normal_masks).sum())
+        fpr = fp_pixels / max(total_normal_pixels, 1)
+
+        # Подсчет PRO по предвычисленным компонентам
         pro_values: list[float] = []
-        fp_pixels: int = 0
-        total_normal_pixels: int = 0
-
-        for pred_map, gt_mask in zip(binary_maps, gt_masks):
-            # FP / нормальные пиксели
-            normal_mask = ~gt_mask
-            fp_pixels += int((pred_map & normal_mask).sum())
-            total_normal_pixels += int(normal_mask.sum())
-
-            # Связные компоненты GT-аномалий
-            labeled, n_components = scipy_label(gt_mask)
-            for comp_idx in range(1, n_components + 1):
-                component_mask = labeled == comp_idx
-                overlap = (pred_map & component_mask).sum() / component_mask.sum()
+        for pred_map, comps in zip(binary_maps, image_components):
+            for comp_mask in comps:
+                overlap = (pred_map & comp_mask).sum() / comp_mask.sum()
                 pro_values.append(float(overlap))
 
-        fpr = fp_pixels / max(total_normal_pixels, 1)
         pro = float(np.mean(pro_values)) if pro_values else 0.0
 
         all_fprs.append(fpr)
@@ -118,7 +101,7 @@ def _compute_pro(
     sort_idx = np.argsort(fprs)
     fprs, pros = fprs[sort_idx], pros[sort_idx]
 
-    # Интегрируем до FPR = 0.3, нормируем (авторский протокол)
+    # Интегрируем до FPR = 0.3, нормируем
     fpr_limit = 0.3
     mask = fprs <= fpr_limit
     if mask.sum() > 1:
