@@ -42,11 +42,11 @@ jobs:
 
       - name: Build EXE with PyInstaller
         run: |
-          poetry run pyinstaller --onefile --windowed --name="PatchCore_App_${{ inputs.version_tag }}" main.py
+          poetry run pyinstaller --windowed --name="PatchCore_App_${{ inputs.version_tag }}" main.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4
         with:
           name: PatchCore-Executable-${{ inputs.version_tag }}
-          path: dist/*.exe
+          path: dist/PatchCore_App_${{ inputs.version_tag }}
           retention-days: 7
