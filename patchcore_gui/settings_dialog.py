@@ -131,6 +131,7 @@ class SettingsDialog(QDialog):
         device_layout.addWidget(QLabel("Устройство (PyTorch):", device_row))
         self._device_combo = QComboBox(device_row)
         self._device_combo.addItems(["auto", "cpu", "cuda"])
+        self._device_combo.currentIndexChanged.connect(self._on_device_changed)
         device_layout.addWidget(self._device_combo)
         self._faiss_gpu_check = QCheckBox("Ускорение FAISS (GPU)", device_row)
         self._faiss_gpu_check.setChecked(False)
@@ -273,6 +274,7 @@ class SettingsDialog(QDialog):
         self._patch_spin.setValue(s.patch_size if s.patch_size % 2 == 1 else s.patch_size + 1)
         self._device_combo.setCurrentText(s.device if s.device in {"auto", "cpu", "cuda"} else "auto")
         self._faiss_gpu_check.setChecked(s.use_gpu_faiss)
+        self._on_device_changed()
 
         is_f1 = s.threshold_mode == "f1_optimal"
         self.radio_f1.setChecked(is_f1)
@@ -299,6 +301,12 @@ class SettingsDialog(QDialog):
     def _set_path_label(label: QLabel, path: str) -> None:
         label.setText(path if path else "Не выбрано")
         label.setToolTip(path)
+
+    def _on_device_changed(self, _index: int = 0) -> None:
+        is_cuda = self._device_combo.currentText() == "cuda"
+        self._faiss_gpu_check.setVisible(is_cuda)
+        if not is_cuda:
+            self._faiss_gpu_check.setChecked(False)
 
     def _on_threshold_type_changed(self) -> None:
         self._f1_box.setVisible(self.radio_f1.isChecked())

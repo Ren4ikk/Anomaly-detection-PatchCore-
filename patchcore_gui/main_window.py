@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -33,6 +34,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     QDialog,
@@ -484,9 +486,19 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        outer.addWidget(splitter, stretch=1)
-
-        outer.addWidget(self._build_log_panel())
+        # Вертикальный сплиттер: верхняя зона (изображение/панели) + нижняя (журнал/лог)
+        v_splitter = QSplitter(Qt.Orientation.Vertical)
+        top_widget = QWidget()
+        top_layout = QVBoxLayout(top_widget)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(0)
+        top_layout.addWidget(splitter)
+        v_splitter.addWidget(top_widget)
+        v_splitter.addWidget(self._build_log_panel())
+        v_splitter.setStretchFactor(0, 1)
+        v_splitter.setStretchFactor(1, 0)
+        v_splitter.setSizes([600, 200])
+        outer.addWidget(v_splitter, stretch=1)
 
     def _frame(self, title: str) -> tuple[QFrame, QVBoxLayout]:
         frame = QFrame()
@@ -659,27 +671,32 @@ class MainWindow(QMainWindow):
 
     def _build_log_panel(self) -> QFrame:
         frame, flay = self._frame("Журнал / Лог")
-        frame.setMaximumHeight(220)
 
-        # --- Tab bar row: tabs on the left, clear button on the right ---
+        # --- Tab bar row: menu button on the left, then tabs ---
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(6)
+        top_row.setSpacing(4)
+
+        # Кнопка-меню (⋯) с действиями
+        self._log_menu_btn = QToolButton()
+        self._log_menu_btn.setText("☰")
+        self._log_menu_btn.setToolTip("Действия с журналом")
+        self._log_menu_btn.setFixedSize(32, 32)
+        self._log_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+
+        log_menu = QMenu(self._log_menu_btn)
+        self._action_clear_journal = log_menu.addAction("Очистить журнал")
+        self._action_clear_journal.triggered.connect(self._clear_journal)
+        log_menu.addSeparator()
+        self._action_export_excel = log_menu.addAction("Экспорт в Excel…")
+        self._action_export_excel.triggered.connect(self._export_to_excel)
+        self._log_menu_btn.setMenu(log_menu)
+
+        top_row.addWidget(self._log_menu_btn, alignment=Qt.AlignmentFlag.AlignTop)
 
         self._bottom_tabs = QTabWidget()
         self._bottom_tabs.setDocumentMode(True)
         top_row.addWidget(self._bottom_tabs, stretch=1)
-
-        self._btn_clear_journal = QPushButton("Очистить журнал")
-        self._btn_clear_journal.setFixedWidth(160)
-        self._btn_clear_journal.setProperty("role", "clear")
-        self._btn_clear_journal.clicked.connect(self._clear_journal)
-        top_row.addWidget(self._btn_clear_journal, alignment=Qt.AlignmentFlag.AlignTop)
-
-        self._btn_export_excel = QPushButton("Экспорт в Excel")
-        self._btn_export_excel.setFixedWidth(160)
-        self._btn_export_excel.clicked.connect(self._export_to_excel)
-        top_row.addWidget(self._btn_export_excel, alignment=Qt.AlignmentFlag.AlignTop)
 
         flay.addLayout(top_row)
 
@@ -714,8 +731,8 @@ class MainWindow(QMainWindow):
         return frame
 
     def _on_bottom_tab_changed(self, index: int) -> None:
-        self._btn_clear_journal.setVisible(index == 0)
-        self._btn_export_excel.setVisible(index == 0)
+        is_journal = index == 0
+        self._log_menu_btn.setVisible(is_journal)
 
     def _clear_journal(self) -> None:
         self._log_table.setRowCount(0)
@@ -770,6 +787,14 @@ class MainWindow(QMainWindow):
             QTextEdit { background-color: #1a1a1c; color: #b0d0b0; border: none; }
             QPushButton[role="clear"] { background-color: #3a2a2a; border: 1px solid #6a3a3a; color: #e08080; }
             QPushButton[role="clear"]:hover { background-color: #4a2e2e; }
+            QToolButton { padding: 4px 6px; border-radius: 4px; border: 1px solid #555; background-color: #3c3c44; font-size: 14px; }
+            QToolButton:hover { background-color: #4a4a54; }
+            QToolButton::menu-indicator { image: none; width: 0; }
+            QMenu { background-color: #2d2d30; border: 1px solid #555; padding: 4px 0; }
+            QMenu::item { padding: 6px 20px; }
+            QMenu::item:selected { background-color: #3c3c44; }
+            QMenu::item:disabled { color: #666; }
+            QMenu::separator { height: 1px; background: #444; margin: 4px 8px; }
             """
         )
 

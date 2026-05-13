@@ -49,10 +49,9 @@ class MetricResults:
 # Вспомогательные функции
 
 def _compute_pro(
-    anomaly_maps: NDArray,              # (N, H, W) float — карты аномальности (только аномальные)
-    gt_masks: NDArray,                  # (N, H, W) bool/uint8 — бинарные GT-маски
+    anomaly_maps: NDArray,  # (N, H, W) — ВСЕ карты тест-сета (норма + брак)
+    gt_masks: NDArray,       # (N, H, W) — GT-маски; нули для нормальных
     num_thresh: int = 100,
-    all_maps_for_range: NDArray | None = None,  # все карты (норма + брак) для диапазона порогов
 ) -> tuple[float, NDArray, NDArray]:
     """
     Вычисляет PRO (Per-Region Overlap) Score.
@@ -68,8 +67,9 @@ def _compute_pro(
          (авторский протокол).
 
     Args:
-        anomaly_maps: Массив тепловых карт аномальности, форма (N, H, W).
-        gt_masks:     Бинарные GT-маски, форма (N, H, W). 1 = аномалия.
+        anomaly_maps: ВСЕ карты тест-сета (N, H, W) — норма + брак.
+                      Нормальные изображения вносят пиксели в знаменатель FPR.
+        gt_masks:     GT-маски (N, H, W). Для нормальных изображений — нулевые.
         num_thresh:   Число равномерно распределённых порогов.
 
     Returns:
@@ -77,11 +77,10 @@ def _compute_pro(
     """
     gt_masks = gt_masks.astype(bool)
 
-    # Диапазон порогов должен охватывать ВСЕ изображения (и норму, и брак),
-    # иначе кривая PRO не начинается с FPR≈0 и PRO AUC занижается.
-    range_maps = all_maps_for_range if all_maps_for_range is not None else anomaly_maps
-    min_val, max_val = float(range_maps.min()), float(range_maps.max())
-    thresholds = np.linspace(min_val, max_val, num=num_thresh)
+    # Пороги по перцентилям всех карт (норма + брак) — гарантируют равномерное
+    # покрытие реального распределения скоров и плотное заполнение FPR ∈ [0, 0.3].
+    thresholds = np.percentile(anomaly_maps, np.linspace(0, 100, num=num_thresh))
+    thresholds = np.unique(thresholds)
 
     all_fprs: list[float] = []
     all_pros: list[float] = []
@@ -209,16 +208,17 @@ class Metrics:
             results.pixel_fpr = pixel_fpr
             results.pixel_tpr = pixel_tpr
 
-            # PRO Score (только для изображений с аномалиями).
-            # Диапазон порогов строим по ВСЕМ картам (норма + брак),
-            # чтобы кривая охватывала область FPR от 0 до 1.
+            # PRO Score.
+            # Передаём ВСЕ изображения: нормальные вносят свои пиксели
+            # в знаменатель FPR, что соответствует определению метрики.
+            # У нормальных изображений gt_mask нулевая — scipy_label
+            # не находит компонентов, поэтому overlap не затрагивается.
             anomaly_idx = gt_labels == 1
             if anomaly_idx.sum() > 0:
                 results.pro_score, _, _ = _compute_pro(
-                    anomaly_maps[anomaly_idx],
-                    gt_masks[anomaly_idx],
+                    anomaly_maps,
+                    gt_masks,
                     num_thresh=pro_num_thresh,
-                    all_maps_for_range=anomaly_maps,
                 )
 
         return results
