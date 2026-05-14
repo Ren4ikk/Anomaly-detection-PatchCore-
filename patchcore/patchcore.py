@@ -138,7 +138,7 @@ class PatchCore:
 
     def fit(self, train_image_dir: str) -> None:
         """
-        Обучение PatchCore: строит банк памяти M_C из нормальных изображений.
+        Формирование эталонного банка памяти из нормальных изображений.
 
         Pipeline:
           1. Загружаем все train-изображения через PatchCoreDataset
@@ -190,34 +190,34 @@ class PatchCore:
         # Этап 3: сжатие через coreset
         print(f"[PatchCore] Coreset subsampling (ratio={self.coreset_sampler.ratio})...")
         coreset = self.coreset_sampler.sample(memory_bank)
-        print(f"[PatchCore] Корсет M_C: {coreset.shape}")
+        print(f"[PatchCore] Эталонный банк памяти M_C: {coreset.shape}")
 
         # Этап 4: строим FAISS-индекс
         print("[PatchCore] Построение FAISS-индекса...")
         self.nn_index.fit(coreset)
-        print("[PatchCore] fit() завершён.")
+        print("[PatchCore] Формирование банка завершено.")
 
     def compute_score_range(self, train_image_dir: str) -> None:
         """
-        Вычисляет глобальный диапазон скоров и порог по train-изображениям.
+        Вычисляет глобальный диапазон скоров и порог по эталонным изображениям.
 
         Прогоняет все нормальные train-изображения через predict() и
         вычисляет три значения:
 
-          score_max  — верхняя граница шкалы визуализации..
+          score_max  — верхняя граница шкалы визуализации.
 
           threshold  — порог для вынесения вердикта НОРМА/АНОМАЛИЯ.
                        Правило 3σ: покрывает 99.7% нормального распределения,
                        всё что выше — статистически аномально.
 
-          score_min  — минимальный max-пиксель карты по train-изображениям.
+          score_min  — минимальный max-пиксель карты по эталонным изображениям.
 
-        Вызывать ПОСЛЕ fit(). Все значения сохраняются в файл модели через save().
+        Вызывать ПОСЛЕ fit(). Все значения сохраняются в файл банка через save().
 
         Args:
             train_image_dir: Та же папка что и в fit().
         """
-        print("[PatchCore] Вычисление диапазона скоров и порога по train-данным...")
+        print("[PatchCore] Вычисление диапазона скоров и порога по эталонным данным...")
 
         dataset = PatchCoreDataset(root=train_image_dir)
         loader = DataLoader(
@@ -242,20 +242,10 @@ class PatchCore:
         map_maxes_arr = np.array(all_map_maxes,   dtype=np.float32)
 
         # -- score_min / score_max (для визуализации карты) -------------------
-        # score_min — реальный минимум сырых L2-расстояний по train-картам.
-        # Нельзя использовать 0.0: L2-расстояния никогда не бывают близки
-        # к нулю (нормальные значения ~4–12), поэтому фиксированный 0.0
-        # смещает всю шкалу вверх и нормальные кадры выглядят оранжевыми.
-        # score_max — максимальный пиксель карты среди всех train-изображений:
-        # это честная верхняя граница нормального класса.
         self.score_min = float(np.min(map_maxes_arr))
         self.score_max = float(np.max(map_maxes_arr))
 
         # -- threshold (для вердикта НОРМА/АНОМАЛИЯ) --------------------------
-        # Отказываемся от max(), чтобы один выброс в train не сломал порог.
-        # Берем 99-й перцентиль (отсекаем 1% возможных грязных данных в train)
-        # и добавляем запас в 3 стандартных отклонения.
-
         std_score = float(np.std(scores_arr))
         p99 = float(np.percentile(scores_arr, 99))
 
@@ -291,7 +281,7 @@ class PatchCore:
             RuntimeError: Если fit() не был вызван.
         """
         if not self.nn_index.is_fitted:
-            raise RuntimeError("Сначала вызовите fit().")
+            raise RuntimeError("Эталонный банк памяти не сформирован. Вызовите fit() сначала.")
         if self._spatial_size is None:
             raise RuntimeError("spatial_size не установлен. Вызовите fit() сначала.")
 
@@ -467,7 +457,7 @@ class PatchCore:
 
     def save_metrics(self, metrics_dict: dict) -> None:
         """
-        Сохраняет результаты оценки качества модели.
+        Сохраняет результаты оценки качества банка памяти.
 
         Args:
             metrics_dict: Словарь с ключами image_auroc, pixel_auroc, pro_score,
@@ -478,7 +468,7 @@ class PatchCore:
 
     def save(self, path: str) -> None:
         """
-        Сохраняет состояние модели (корсет M_C и метаданные).
+        Сохраняет эталонный банк памяти (корсет M_C и метаданные).
 
         Сохраняется только корсет — backbone не нужен, он всегда
         загружается заново из torchvision с фиксированными весами.
@@ -487,7 +477,7 @@ class PatchCore:
             path: Путь к файлу (.pt).
         """
         if not self.nn_index.is_fitted:
-            raise RuntimeError("Модель не обучена. Вызовите fit() сначала.")
+            raise RuntimeError("Эталонный банк памяти не сформирован. Вызовите fit() сначала.")
 
         state = {
             "memory_bank": self.nn_index.memory_bank,
@@ -504,11 +494,11 @@ class PatchCore:
             "metrics": self.metrics,
         }
         torch.save(state, path)
-        print(f"[PatchCore] Модель сохранена: {path}")
+        print(f"[PatchCore] Эталонный банк памяти сохранён: {path}")
 
     def load(self, path: str) -> None:
         """
-        Загружает сохранённое состояние модели.
+        Загружает сохранённый эталонный банк памяти.
 
         Args:
             path: Путь к файлу (.pt), сохранённому через save().
@@ -533,13 +523,13 @@ class PatchCore:
 
         self.metrics = state.get("metrics", {})
         self.nn_index.fit(state["memory_bank"])
-        print(f"[PatchCore] Модель загружена: {path}")
+        print(f"[PatchCore] Эталонный банк памяти загружен: {path}")
         print(f"  Размер M_C  : {state['memory_bank'].shape}")
         print(f"  Диапазон    : [{self.score_min:.4f}, {self.score_max:.4f}]")
         print(f"  Порог       : {self.threshold:.4f}")
 
     def __repr__(self) -> str:
-        status = "fitted" if self.nn_index.is_fitted else "not fitted"
+        status = "сформирован" if self.nn_index.is_fitted else "не сформирован"
         return (
             f"{self.__class__.__name__}("
             f"device={self.device}, "

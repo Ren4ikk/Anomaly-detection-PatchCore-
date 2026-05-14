@@ -48,7 +48,7 @@ class TrainingSettings:
 class SettingsDialog(QDialog):
     def __init__(self, initial: TrainingSettings | None = None, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Глубокие настройки обучения")
+        self.setWindowTitle("Настройки формирования эталонного банка памяти")
         self.setModal(True)
         self.resize(760, 520)
         self._initial = initial or TrainingSettings()
@@ -148,7 +148,7 @@ class SettingsDialog(QDialog):
         page = QWidget(self)
         root = QVBoxLayout(page)
 
-        self.radio_3sigma = QRadioButton("Авто-порог по правилу 3-х сигм (по train данным)", page)
+        self.radio_3sigma = QRadioButton("Авто-порог по правилу 3-х сигм (по эталонным данным)", page)
         self.radio_f1 = QRadioButton("F1-оптимальный порог (требуется валидационный датасет)", page)
         self.radio_3sigma.setChecked(True)
         self.radio_3sigma.setStyleSheet(
@@ -208,7 +208,7 @@ class SettingsDialog(QDialog):
 
     def _build_metrics_tab(self) -> QWidget:
         """
-        Вкладка настройки вычисления метрик после обучения.
+        Вкладка настройки вычисления метрик после формирования банка.
         Image AUROC — всегда. Pixel AUROC и PRO — только с GT-масками.
         """
         page = QWidget(self)

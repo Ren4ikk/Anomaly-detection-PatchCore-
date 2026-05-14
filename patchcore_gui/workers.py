@@ -1,5 +1,5 @@
 """
-Фоновые потоки для загрузки весов и инференса PatchCore без блокировки GUI.
+Фоновые потоки для загрузки банка памяти и инференса PatchCore без блокировки GUI.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from patchcore_gui.settings_dialog import TrainingSettings
 
 
 def normalize_score(raw_score: float, score_min: float, score_max: float) -> float:
-    """Линейно нормирует скор в [0, 1] по диапазону модели."""
+    """Линейно нормирует скор в [0, 1] по диапазону банка памяти."""
     denom = score_max - score_min
     if denom <= 1e-12:
         return 0.0
@@ -32,7 +32,7 @@ class ModelLoadWorker(QThread):
     """
     Однократная загрузка чекпоинта в объекте PatchCore (в отдельном потоке).
 
-    После успешной загрузки объект модели можно передавать в InferenceWorker
+    После успешной загрузки объект банка памяти можно передавать в InferenceWorker
     только если дальнейшее использование будет в том же потоке — поэтому здесь
     мы только проверяем, что файл читается, и эмитим метаданные.
 
@@ -67,7 +67,7 @@ class ModelLoadWorker(QThread):
 
 class InferenceWorker(QThread):
     """
-    Очередь инференса: модель создаётся и используется только в этом QThread.
+    Очередь инференса: банк памяти создаётся и используется только в этом QThread.
 
     В главный поток уходят сырое значение скора, нормализованный скор [0,1],
     карта аномалий и время; ошибки — отдельным сигналом.
@@ -133,7 +133,8 @@ class InferenceWorker(QThread):
 
 class TrainingWorker(QThread):
     """
-    Полный цикл обучения PatchCore в фоновом потоке: fit - compute_score_range - save.
+    Полный цикл формирования эталонного банка памяти PatchCore в фоновом потоке:
+    fit → compute_score_range → save.
 
     Папка ``train_image_dir`` должна содержать только изображения нормального класса
     (эталоны без дефектов) — по ним строится банк памяти и статистика порога.
@@ -254,7 +255,7 @@ class TrainingWorker(QThread):
 
     def _compute_metrics(self, model: "PatchCore") -> dict:
         """
-        Прогоняет validation-данные через модель и вычисляет метрики.
+        Прогоняет validation-данные через банк памяти и вычисляет метрики.
         Image AUROC всегда. Pixel AUROC и PRO — только если есть GT-маски.
         """
         from patchcore.metrics import Metrics
