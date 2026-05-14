@@ -105,7 +105,14 @@ def _compute_pro(
     fpr_limit = 0.3
     mask = fprs <= fpr_limit
     if mask.sum() > 1:
-        pro_auc = float(np.trapezoid(pros[mask], fprs[mask]) / fpr_limit)
+        fps_clipped = fprs[mask]
+        pros_clipped = pros[mask]
+        # Добавляем якорную точку (0, PRO[0]), если кривая не начинается с нуля,
+        # чтобы не потерять площадь под первым отрезком при интегрировании
+        if fps_clipped[0] > 0.0:
+            fps_clipped = np.concatenate([[0.0], fps_clipped])
+            pros_clipped = np.concatenate([[pros_clipped[0]], pros_clipped])
+        pro_auc = float(np.trapezoid(pros_clipped, fps_clipped) / fpr_limit)
     else:
         pro_auc = 0.0
 
