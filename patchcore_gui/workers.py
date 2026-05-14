@@ -147,6 +147,8 @@ class TrainingWorker(QThread):
     training_failed = pyqtSignal(str)
     # Некритичное предупреждение: банк сформирован, но что-то пошло не так с метриками/масками
     training_warning = pyqtSignal(str)
+    # Пользователь нажал «Отмена» — банк не сохранён
+    training_cancelled = pyqtSignal()
 
     def __init__(
         self,
@@ -165,6 +167,14 @@ class TrainingWorker(QThread):
         self._settings = settings
         self._metrics_val_dir = metrics_val_dir
         self._metrics_mask_dir = metrics_mask_dir
+        self._cancel_requested: bool = False
+
+    def request_cancel(self) -> None:
+        """Безопасная отмена: поднимает флаг, поток завершится на ближайшей точке проверки."""
+        self._cancel_requested = True
+
+    def _should_stop(self) -> bool:
+        return self._cancel_requested
 
     def run(self) -> None:
         self.training_started.emit()
@@ -186,8 +196,16 @@ class TrainingWorker(QThread):
                 patch_size=self._settings.patch_size,
                 use_gpu_faiss=self._settings.use_gpu_faiss,
             )
-            model.fit(self._train_image_dir)
-            model.compute_score_range(self._train_image_dir)
+            model.fit(self._train_image_dir, should_stop=self._should_stop)
+
+            if self._should_stop():
+                raise InterruptedError("Формирование банка отменено пользователем.")
+
+            model.compute_score_range(self._train_image_dir, should_stop=self._should_stop)
+
+            if self._should_stop():
+                raise InterruptedError("Формирование банка отменено пользователем.")
+
             if self._settings.threshold_mode == "f1_optimal":
                 self._apply_f1_threshold(model=model)
 
@@ -212,6 +230,9 @@ class TrainingWorker(QThread):
             smin = float(model.score_min)
             smax = float(model.score_max)
             self.training_success.emit(thr, smin, smax, metrics_dict)
+        except InterruptedError:
+            print("[TrainingWorker] Формирование банка отменено пользователем.")
+            self.training_cancelled.emit()
         except Exception as exc:  # noqa: BLE001
             self.training_failed.emit(str(exc))
         else:

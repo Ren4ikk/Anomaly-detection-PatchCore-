@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import torch
@@ -136,7 +136,11 @@ class PatchCore:
         #        "image_fpr", "image_tpr", "pixel_fpr", "pixel_tpr"
         self.metrics: dict = {}
 
-    def fit(self, train_image_dir: str) -> None:
+    def fit(
+        self,
+        train_image_dir: str,
+        should_stop: "Callable[[], bool] | None" = None,
+    ) -> None:
         """
         Формирование эталонного банка памяти из нормальных изображений.
 
@@ -149,6 +153,9 @@ class PatchCore:
 
         Args:
             train_image_dir: Путь к директории с нормальными train-изображениями.
+            should_stop:     Опциональный коллбэк () -> bool. Если возвращает True —
+                             выполнение прерывается с поднятием InterruptedError.
+                             Проверяется после каждого батча.
         """
         print(f"[PatchCore] fit() — загрузка изображений из: {train_image_dir}")
 
@@ -168,6 +175,9 @@ class PatchCore:
 
         print(f"[PatchCore] Извлечение признаков ({len(dataset)} изображений)...")
         for batch_idx, images in enumerate(loader):
+            if should_stop is not None and should_stop():
+                raise InterruptedError("Формирование банка отменено пользователем.")
+
             images = images.to(self.device)
 
             # extract_with_spatial_info возвращает признаки и размер карты
@@ -197,7 +207,11 @@ class PatchCore:
         self.nn_index.fit(coreset)
         print("[PatchCore] Формирование банка завершено.")
 
-    def compute_score_range(self, train_image_dir: str) -> None:
+    def compute_score_range(
+        self,
+        train_image_dir: str,
+        should_stop: "Callable[[], bool] | None" = None,
+    ) -> None:
         """
         Вычисляет глобальный диапазон скоров и порог по эталонным изображениям.
 
@@ -216,6 +230,8 @@ class PatchCore:
 
         Args:
             train_image_dir: Та же папка что и в fit().
+            should_stop:     Опциональный коллбэк () -> bool. Если возвращает True —
+                             выполнение прерывается с поднятием InterruptedError.
         """
         print("[PatchCore] Вычисление диапазона скоров и порога по эталонным данным...")
 
@@ -233,6 +249,8 @@ class PatchCore:
         all_map_maxes: list[float] = []
 
         for images in loader:
+            if should_stop is not None and should_stop():
+                raise InterruptedError("Формирование банка отменено пользователем.")
             results = self.predict(images)
             for r in results:
                 all_image_scores.append(r.image_score)

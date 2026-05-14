@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressBar,
     QProgressDialog,
     QPushButton,
     QSlider,
@@ -437,7 +438,7 @@ class MainWindow(QMainWindow):
         self._preload_worker: Optional[InferenceWorker] = None
         self._preload_model_path: str = ""
         self._training_worker: Optional[TrainingWorker] = None
-        self._training_progress: Optional[QProgressDialog] = None
+        self._training_progress: Optional[QDialog] = None
         self._training_busy: bool = False
         self._score_min: float = 0.0
         self._score_max: float = 1.0
@@ -936,13 +937,48 @@ class MainWindow(QMainWindow):
             self._btn_start.setEnabled(not self._running)
 
     def _open_training_progress(self) -> None:
-        dlg = QProgressDialog(self)
-        dlg.setLabelText("Идёт формирование эталонного банка памяти…")
+        from PyQt6.QtWidgets import QDialogButtonBox
+
+        dlg = QDialog(self)
         dlg.setWindowTitle("Формирование банка памяти PatchCore")
-        dlg.setRange(0, 0)
-        dlg.setCancelButton(None)
-        dlg.setMinimumDuration(0)
         dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setMinimumWidth(380)
+        # Запрещаем закрытие крестиком — только через кнопку «Отмена»
+        dlg.setWindowFlags(
+            dlg.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint
+        )
+
+        layout = QVBoxLayout(dlg)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 16)
+
+        lbl = QLabel("Идёт формирование эталонного банка памяти…")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl)
+
+        bar = QProgressBar()
+        bar.setRange(0, 0)   # indeterminate (анимированная полоса)
+        bar.setTextVisible(False)
+        layout.addWidget(bar)
+
+        btn_cancel = QPushButton("Отмена")
+        btn_cancel.setProperty("role", "stop")
+        btn_cancel.setFixedHeight(32)
+
+        def _on_cancel() -> None:
+            lbl.setText("Отмена… ожидание завершения текущего шага…")
+            btn_cancel.setEnabled(False)
+            if self._training_worker is not None:
+                self._training_worker.request_cancel()
+
+        btn_cancel.clicked.connect(_on_cancel)
+
+        btn_box = QHBoxLayout()
+        btn_box.addStretch()
+        btn_box.addWidget(btn_cancel)
+        btn_box.addStretch()
+        layout.addLayout(btn_box)
+
         dlg.show()
         self._training_progress = dlg
 
@@ -1055,6 +1091,7 @@ class MainWindow(QMainWindow):
         self._training_worker.training_success.connect(self._on_training_success)
         self._training_worker.training_failed.connect(self._on_training_failed)
         self._training_worker.training_warning.connect(self._on_training_warning)
+        self._training_worker.training_cancelled.connect(self._on_training_cancelled)
         self._training_worker.finished.connect(self._on_training_worker_finished)
         self._training_worker.start()
 
@@ -1093,6 +1130,23 @@ class MainWindow(QMainWindow):
         self._close_training_progress()
         self._set_training_locked(False)
         QMessageBox.critical(self, "Ошибка формирования банка", message)
+
+    def _on_training_cancelled(self) -> None:
+        """Пользователь нажал «Отмена» — банк не сохранён, UI разблокируется."""
+        self._close_training_progress()
+        self._set_training_locked(False)
+        # Убираем строку «Идёт формирование…» из журнала (она была первой строкой)
+        if self._log_table.rowCount() > 0:
+            first_status = self._log_table.item(0, 3)
+            if first_status and "формирование" in first_status.text().lower():
+                self._log_table.removeRow(0)
+        self._append_log_row("—", 0.0, "ОТМЕНЕНО")
+        QMessageBox.information(
+            self,
+            "Формирование банка",
+            "Формирование эталонного банка памяти отменено.\n"
+            "Файл банка не был сохранён.",
+        )
 
     def _on_training_warning(self, message: str) -> None:
         """Некритичное предупреждение: банк сформирован, но метрики не посчитались."""
