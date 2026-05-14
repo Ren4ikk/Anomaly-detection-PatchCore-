@@ -372,6 +372,31 @@ class SettingsDialog(QDialog):
             else self._metrics_mask_label.text() or None
         )
 
+        # Валидация папки метрик: структура должна совпадать с validation (good + дефекты)
+        if metrics_val is not None:
+            if not self._validate_f1_dirs(metrics_val):
+                QMessageBox.warning(
+                    self,
+                    "Оценка качества — Validation",
+                    "Папка Validation для метрик должна содержать подпапку 'good' "
+                    "и хотя бы одну папку с дефектами.\n\n"
+                    "Ожидаемая структура:\n"
+                    "  <папка>/good/*.png\n"
+                    "  <папка>/<дефект>/*.png",
+                )
+                return
+
+        # Валидация папки GT-масок: должна существовать и быть директорией
+        if metrics_mask is not None:
+            if not Path(metrics_mask).is_dir():
+                QMessageBox.warning(
+                    self,
+                    "Оценка качества — GT-маски",
+                    f"Папка GT-масок не найдена:\n{metrics_mask}\n\n"
+                    "Убедитесь, что путь указан верно.",
+                )
+                return
+
         self._settings = TrainingSettings(
             backbone_name=self._backbone_combo.currentText(),
             layers=layers,

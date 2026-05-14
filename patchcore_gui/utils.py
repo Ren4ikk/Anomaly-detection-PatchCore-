@@ -21,12 +21,17 @@ _RESIZE: int = 256
 _CROP: int = 224
 
 
-def list_image_paths(folder: str) -> list[str]:
+def list_image_paths(folder: str, recursive: bool = True) -> list[str]:
     """
-    Возвращает отсортированные пути к изображениям в папке (не рекурсивно).
+    Возвращает отсортированные пути к изображениям в папке.
 
     Args:
-        folder: Корневая папка «конвейера».
+        folder:    Корневая папка «конвейера» или тренировочная директория.
+        recursive: Если True — обходит все вложенные подпапки (rglob).
+                   Если False — только верхний уровень (iterdir).
+                   По умолчанию True, чтобы корректно работать со структурой
+                   вида train/good/*.png, принятой в MVTec AD и аналогичных
+                   датасетах (совпадает с поведением PatchCoreDataset).
 
     Returns:
         Список абсолютных путей в виде строк.
@@ -34,10 +39,18 @@ def list_image_paths(folder: str) -> list[str]:
     root = Path(folder)
     if not root.is_dir():
         return []
-    paths: list[Path] = []
-    for p in root.iterdir():
-        if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS:
-            paths.append(p)
+
+    if recursive:
+        paths = [
+            p for p in root.rglob("*")
+            if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS
+        ]
+    else:
+        paths = [
+            p for p in root.iterdir()
+            if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS
+        ]
+
     return [str(p.resolve()) for p in sorted(paths, key=lambda x: x.name.lower())]
 
 
@@ -92,7 +105,6 @@ def anomaly_map_to_bgr_heatmap(
         m = (m - float(score_min)) / float(score_max - score_min)
     else:
         # Fallback: нормализация по локальному min/max.
-        # Защита от сплошного красного когда сырые значения >>1 и clip(0,1) даёт 1.0.
         lo, hi = float(m.min()), float(m.max())
         if hi > lo:
             m = (m - lo) / (hi - lo)
@@ -130,8 +142,6 @@ def blend_rgb_with_heat_bgr(
     if intensity_map is None:
         out = (1.0 - a) * base + a * over
     else:
-        # Снижаем вклад overlay на "холодных" участках, чтобы нормальные кадры
-        # оставались визуально ближе к оригиналу.
         w = np.asarray(intensity_map, dtype=np.float32)
         w = np.clip(w, 0.0, 1.0)
         a_map = (a * w)[..., None]

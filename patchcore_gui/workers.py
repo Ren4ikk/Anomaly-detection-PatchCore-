@@ -145,6 +145,8 @@ class TrainingWorker(QThread):
     training_success = pyqtSignal(float, float, float, dict)
     training_finished = pyqtSignal()
     training_failed = pyqtSignal(str)
+    # Некритичное предупреждение: банк сформирован, но что-то пошло не так с метриками/масками
+    training_warning = pyqtSignal(str)
 
     def __init__(
         self,
@@ -196,7 +198,14 @@ class TrainingWorker(QThread):
                     metrics_dict = self._compute_metrics(model)
                     model.save_metrics(metrics_dict)
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[TrainingWorker] Не удалось вычислить метрики: {exc}")
+                    msg = str(exc)
+                    print(f"[TrainingWorker] Не удалось вычислить метрики: {msg}")
+                    self.training_warning.emit(
+                        f"Эталонный банк памяти сформирован успешно, однако вычислить "
+                        f"метрики качества не удалось:\n\n{msg}\n\n"
+                        f"Проверьте структуру папки Validation (должны быть подпапки "
+                        f"'good' и папки с дефектами) и при необходимости — папку GT-масок."
+                    )
 
             model.save(self._save_path)
             thr = float(model.threshold)
@@ -285,6 +294,16 @@ class TrainingWorker(QThread):
         gt_masks_arr = None
         maps_arr = None
         has_masks = any(m is not None for m in val_masks)
+
+        # Если папка масок была указана, но ни одна маска не нашлась по пути
+        # category/stem* — предупреждаем: пиксельные метрики считаться не будут.
+        if self._metrics_mask_dir and not has_masks:
+            raise ValueError(
+                f"Папка GT-масок указана ({self._metrics_mask_dir}), но ни одна маска "
+                f"не найдена. Ожидаемая структура: <папка_масок>/<категория>/<имя_файла>.*  "
+                f"(например: masks/crack/001.png). Pixel AUROC и PRO Score не будут вычислены."
+            )
+
         if has_masks:
             gt_list = []
             map_list = []

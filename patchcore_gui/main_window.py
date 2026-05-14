@@ -1028,12 +1028,14 @@ class MainWindow(QMainWindow):
                 "Для F1-оптимального порога сначала укажите папку Validation в настройках формирования банка.",
             )
             return
-        train_files = list_image_paths(self._train_image_dir)
+        train_files = list_image_paths(self._train_image_dir, recursive=True)
         if not train_files:
             QMessageBox.warning(
                 self,
                 "Пустая папка",
-                "В выбранной папке нет поддерживаемых изображений.",
+                "В выбранной папке (включая вложенные подпапки) не найдено "
+                "поддерживаемых изображений.\n\n"
+                "Поддерживаемые форматы: JPEG, PNG, BMP, TIFF, WebP.",
             )
             return
 
@@ -1052,6 +1054,7 @@ class MainWindow(QMainWindow):
         )
         self._training_worker.training_success.connect(self._on_training_success)
         self._training_worker.training_failed.connect(self._on_training_failed)
+        self._training_worker.training_warning.connect(self._on_training_warning)
         self._training_worker.finished.connect(self._on_training_worker_finished)
         self._training_worker.start()
 
@@ -1090,6 +1093,10 @@ class MainWindow(QMainWindow):
         self._close_training_progress()
         self._set_training_locked(False)
         QMessageBox.critical(self, "Ошибка формирования банка", message)
+
+    def _on_training_warning(self, message: str) -> None:
+        """Некритичное предупреждение: банк сформирован, но метрики не посчитались."""
+        QMessageBox.warning(self, "Предупреждение — оценка качества", message)
 
     def _on_training_worker_finished(self) -> None:
         self._training_worker = None
@@ -1147,9 +1154,9 @@ class MainWindow(QMainWindow):
         if not self._image_dir:
             QMessageBox.warning(self, "Нет папки", "Укажите папку с изображениями.")
             return
-        paths = list_image_paths(self._image_dir)
+        paths = list_image_paths(self._image_dir, recursive=False)
         if not paths:
-            QMessageBox.warning(self, "Пусто", "В папке нет поддерживаемых изображений.")
+            QMessageBox.warning(self, "Пусто", "В папке нет поддерживаемых изображений.\n\nПоддерживаемые форматы: JPEG, PNG, BMP, TIFF, WebP.")
             return
         self._image_paths = paths
         self._conveyor_index = 0
