@@ -422,7 +422,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, device_preference: str = "auto") -> None:
         super().__init__()
-        self.setWindowTitle("PatchCore — визуальный контроль качества")
+        self.setWindowTitle("PatchCoreApp — визуальный контроль качества")
         self.resize(1280, 800)
 
         self._device_pref = device_preference
@@ -550,7 +550,7 @@ class MainWindow(QMainWindow):
         self._btn_start.setProperty("role", "start")
         self._btn_stop.setProperty("role", "stop")
 
-        self._btn_model_info = QPushButton("ℹ Параметры банка памяти")
+        self._btn_model_info = QPushButton("Параметры банка памяти")
         self._btn_model_info.clicked.connect(self._show_model_info)
         self._btn_model_info.setEnabled(False)
 
