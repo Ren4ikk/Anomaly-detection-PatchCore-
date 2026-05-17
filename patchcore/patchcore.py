@@ -522,26 +522,38 @@ class PatchCore:
             path: Путь к файлу (.pt), сохранённому через save().
         """
         state = torch.load(path, map_location="cpu", weights_only=True)
+        self.load_from_state(state)
+        print(f"[PatchCore] Эталонный банк памяти загружен: {path}")
 
-        self._spatial_size = state["spatial_size"]
-        self.n_reweight_nn = state["n_reweight_nn"]
+    def load_from_state(self, state: dict) -> None:
+        """
+        Загружает эталонный банк памяти из уже прочитанного state dict.
+
+        Используется в InferenceWorker когда state dict уже был прочитан
+        ранее (для извлечения параметров backbone в конструкторе PatchCore) —
+        позволяет избежать повторного torch.load с диска и повторного создания
+        FeatureExtractor.
+
+        В отличие от load(), не вызывает torch.load и не пересоздаёт
+        FeatureExtractor — backbone уже загружен в __init__.
+
+        Args:
+            state: Словарь состояния, ранее прочитанный через
+                   torch.load(path, map_location="cpu", weights_only=True).
+        """
+        self._spatial_size  = state["spatial_size"]
+        self.n_reweight_nn  = state["n_reweight_nn"]
         self.gaussian_sigma = state["gaussian_sigma"]
-        self.score_min = float(state.get("score_min", 0.0))
-        self.score_max = float(state.get("score_max", 1.0))
-        self.threshold = float(state.get("threshold", 0.5))
-        self.backbone_name = str(state.get("backbone_name", self.backbone_name))
-        self.layers = tuple(state.get("layers", self.layers))
-        self.patch_size = int(state.get("patch_size", self.patch_size))
-        self.feature_extractor = FeatureExtractor(
-            device=self.device,
-            backbone_name=self.backbone_name,
-            layers=self.layers,
-            patch_size=self.patch_size,
-        )
-
+        self.score_min      = float(state.get("score_min", 0.0))
+        self.score_max      = float(state.get("score_max", 1.0))
+        self.threshold      = float(state.get("threshold", 0.5))
+        self.backbone_name  = str(state.get("backbone_name", self.backbone_name))
+        self.layers         = tuple(state.get("layers", self.layers))
+        self.patch_size     = int(state.get("patch_size", self.patch_size))
+        # FeatureExtractor уже создан в __init__ с правильными параметрами —
+        # пересоздавать не нужно, это устраняет двойную загрузку backbone.
         self.metrics = state.get("metrics", {})
         self.nn_index.fit(state["memory_bank"])
-        print(f"[PatchCore] Эталонный банк памяти загружен: {path}")
         print(f"  Размер M_C  : {state['memory_bank'].shape}")
         print(f"  Диапазон    : [{self.score_min:.4f}, {self.score_max:.4f}]")
         print(f"  Порог       : {self.threshold:.4f}")

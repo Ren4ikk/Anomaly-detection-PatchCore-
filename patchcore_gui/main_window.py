@@ -26,9 +26,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QProgressBar,
-    QProgressDialog,
     QPushButton,
-    QSlider,
     QSplitter,
     QTabWidget,
     QDoubleSpinBox,
@@ -129,7 +127,6 @@ class _StdoutRedirector:
 class BankInfoDialog(QDialog):
     """
     Диалог просмотра параметров эталонного банка памяти PatchCore, считанных из .pt файла.
-    Отображает все метаданные, сохранённые в state dict через PatchCore.save().
     """
 
     def __init__(self, state: dict, model_path: str, parent=None) -> None:
@@ -143,13 +140,11 @@ class BankInfoDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
-        # Path header
         path_label = QLabel(f"<b>Файл:</b> {model_path}")
         path_label.setWordWrap(True)
         path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(path_label)
 
-        # Parameters table
         table = QTableWidget(self)
         table.setColumnCount(2)
         table.setHorizontalHeaderLabels(["Параметр", "Значение"])
@@ -190,17 +185,12 @@ class BankInfoDialog(QDialog):
 
     @staticmethod
     def _build_rows(state: dict) -> list[tuple[str, str]]:
-        """Формирует список (параметр, значение) из state dict банка памяти."""
         rows: list[tuple[str, str]] = []
-
-        # Architecture
         rows.append(("── Архитектура ──", ""))
         rows.append(("Backbone", str(state.get("backbone_name", "—"))))
         layers = state.get("layers", ())
         rows.append(("Слои (layers)", ", ".join(layers) if layers else "—"))
         rows.append(("Размер патча (patch_size)", str(state.get("patch_size", "—"))))
-
-        # Coreset / index
         rows.append(("── Coreset и индекс ──", ""))
         coreset_ratio = state.get("coreset_ratio", None)
         rows.append(("Coreset ratio", f"{coreset_ratio * 100:.2f} %" if coreset_ratio is not None else "—"))
@@ -211,19 +201,13 @@ class BankInfoDialog(QDialog):
             rows.append(("Размер M_C (банк памяти)", "—"))
         spatial = state.get("spatial_size", None)
         rows.append(("Карта признаков (spatial_size)", str(spatial) if spatial else "—"))
-
-        # Scoring
         rows.append(("── Скоры и порог ──", ""))
         rows.append(("score_min", f"{float(state['score_min']):.6f}" if "score_min" in state else "—"))
         rows.append(("score_max", f"{float(state['score_max']):.6f}" if "score_max" in state else "—"))
         rows.append(("threshold", f"{float(state['threshold']):.6f}" if "threshold" in state else "—"))
-
-        # Hyperparams
         rows.append(("── Гиперпараметры ──", ""))
         rows.append(("n_reweight_nn", str(state.get("n_reweight_nn", "—"))))
         rows.append(("gaussian_sigma", str(state.get("gaussian_sigma", "—"))))
-
-        # Metrics
         m = state.get("metrics", {})
         if m:
             rows.append(("── Метрики качества ──", ""))
@@ -233,15 +217,12 @@ class BankInfoDialog(QDialog):
                 rows.append(("Pixel AUROC", f"{float(m['pixel_auroc']):.4f}"))
             if "pro_score" in m:
                 rows.append(("PRO Score", f"{float(m['pro_score']):.4f}"))
-
         return rows
-
 
 
 class BankFormationResultDialog(QDialog):
     """
     Диалог результатов формирования банка: параметры + метрики + ROC-кривые.
-    Показывается сразу после успешного завершения TrainingWorker.
     """
 
     def __init__(
@@ -260,24 +241,13 @@ class BankFormationResultDialog(QDialog):
         self._metrics = metrics
         self._build_ui(threshold, score_min, score_max, save_path, metrics)
 
-    def _build_ui(
-        self,
-        threshold: float,
-        score_min: float,
-        score_max: float,
-        save_path: str,
-        metrics: dict,
-    ) -> None:
+    def _build_ui(self, threshold, score_min, score_max, save_path, metrics) -> None:
         root = QVBoxLayout(self)
         root.setSpacing(8)
-
-        # Header
         header = QLabel(f"<b>Эталонный банк памяти сохранён:</b> {save_path}")
         header.setWordWrap(True)
         header.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(header)
-
-        # Tabs: параметры | метрики и графики
         tabs = QTabWidget(self)
         tabs.addTab(self._build_params_tab(threshold, score_min, score_max), "Параметры")
         if metrics:
@@ -287,14 +257,11 @@ class BankFormationResultDialog(QDialog):
                 if charts_tab is not None:
                     tabs.addTab(charts_tab, "Графики ROC")
         root.addWidget(tabs)
-
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close, parent=self)
         buttons.rejected.connect(self.accept)
         root.addWidget(buttons)
 
-    def _build_params_tab(
-        self, threshold: float, score_min: float, score_max: float
-    ) -> QWidget:
+    def _build_params_tab(self, threshold, score_min, score_max) -> QWidget:
         page = QWidget(self)
         lay = QVBoxLayout(page)
         table = QTableWidget(3, 2, page)
@@ -318,7 +285,6 @@ class BankFormationResultDialog(QDialog):
     def _build_metrics_tab(self, metrics: dict) -> QWidget:
         page = QWidget(self)
         lay = QVBoxLayout(page)
-
         rows = []
         if "image_auroc" in metrics:
             rows.append(("Image AUROC", f"{float(metrics['image_auroc']):.4f}"))
@@ -326,7 +292,6 @@ class BankFormationResultDialog(QDialog):
             rows.append(("Pixel AUROC", f"{float(metrics['pixel_auroc']):.4f}"))
         if "pro_score" in metrics:
             rows.append(("PRO Score", f"{float(metrics['pro_score']):.4f}"))
-
         table = QTableWidget(len(rows), 2, page)
         table.setHorizontalHeaderLabels(["Метрика", "Значение"])
         table.horizontalHeader().setStretchLastSection(True)
@@ -341,59 +306,45 @@ class BankFormationResultDialog(QDialog):
             table.setItem(i, 1, v_item)
         table.resizeColumnToContents(0)
         lay.addWidget(table)
-
         if not _MATPLOTLIB_AVAILABLE:
             lay.addWidget(QLabel("Установите matplotlib для отображения графиков."))
         return page
 
     def _build_charts_tab(self, metrics: dict) -> "QWidget | None":
-        """Строит вкладку с графиками ROC/PRO через matplotlib → PNG → QLabel."""
         import io
-        import numpy as np
-        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtGui import QPixmap as QP
 
         curves = []
-        # Собираем все доступные графики
         if "image_fpr" in metrics and "image_tpr" in metrics:
             auroc = metrics.get("image_auroc", 0.0)
             curves.append(("Image ROC", metrics["image_fpr"], metrics["image_tpr"], f"AUC = {auroc:.4f}"))
-
         if "pixel_fpr" in metrics and "pixel_tpr" in metrics:
             auroc = metrics.get("pixel_auroc", 0.0)
             curves.append(("Pixel ROC", metrics["pixel_fpr"], metrics["pixel_tpr"], f"AUC = {auroc:.4f}"))
-
         if "pro_fpr" in metrics and "pro_tpr" in metrics:
             pro_score = metrics.get("pro_score", 0.0)
             curves.append(("PRO Curve", metrics["pro_fpr"], metrics["pro_tpr"], f"PRO = {pro_score:.4f}"))
-
         if not curves:
             return None
 
-        # Динамически создаем сабплоты в зависимости от количества графиков
         fig, axes = plt.subplots(1, len(curves), figsize=(5 * len(curves), 4), dpi=96)
         if len(curves) == 1:
             axes = [axes]
         fig.patch.set_facecolor("#1e1e20")
-
-        # Добавили третий цвет (зеленоватый) для графика PRO
         colors = ["#6ba3d6", "#f0a060", "#a0d66b"]
 
         for ax, (title, fpr, tpr, label_text), color in zip(axes, curves, colors):
             fpr_arr = np.asarray(fpr, dtype=np.float32)
             tpr_arr = np.asarray(tpr, dtype=np.float32)
-
             ax.set_facecolor("#252526")
             ax.plot(fpr_arr, tpr_arr, color=color, lw=2, label=label_text)
             ax.plot([0, 1], [0, 1], ":", color="#666666", lw=1)
-
             ax.set_xlabel("FPR", color="#c0c0c0")
             ax.set_ylabel("TPR / Overlap", color="#c0c0c0")
             ax.set_title(title, color="#e0e0e0")
             ax.tick_params(colors="#a0a0a0")
-
             for spine in ax.spines.values():
                 spine.set_edgecolor("#555555")
-
             ax.legend(facecolor="#2e2e32", edgecolor="#555555", labelcolor="#e0e0e0")
             ax.set_xlim(0, 1)
             ax.set_ylim(0, 1.05)
@@ -408,12 +359,10 @@ class BankFormationResultDialog(QDialog):
         lay = QVBoxLayout(page)
         img_label = QLabel(page)
         img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        pm = QPixmap()
+        pm = QP()
         pm.loadFromData(buf.read())
         img_label.setPixmap(pm)
         lay.addWidget(img_label)
-
         return page
 
 
@@ -437,7 +386,7 @@ class MainWindow(QMainWindow):
         self._worker: Optional[InferenceWorker] = None
         self._preload_worker: Optional[InferenceWorker] = None
         self._preload_model_path: str = ""
-        self._meta_loader: Optional[MetaLoadWorker] = None   # FIX: асинхронная загрузка метаданных
+        self._meta_loader: Optional[MetaLoadWorker] = None
         self._training_worker: Optional[TrainingWorker] = None
         self._training_progress: Optional[QDialog] = None
         self._training_busy: bool = False
@@ -459,14 +408,13 @@ class MainWindow(QMainWindow):
         self._last_map: Optional[np.ndarray] = None
 
         self._timer = QTimer(self)
-        self._timer.setInterval(1500)  # 1.5 с — эмуляция конвейера
+        self._timer.setInterval(1500)
         self._timer.timeout.connect(self._on_timer_tick)
 
         self._build_ui()
         self._apply_dark_theme()
         self._on_role_changed(self._role_combo.currentIndex())
         self._setup_log_capture()
-
         self._load_ui_state()
 
     def _build_ui(self) -> None:
@@ -475,20 +423,14 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(central)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(8)
-
         outer.addWidget(self._build_role_bar())
-
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        left = self._build_left_column()
-        center = self._build_center_panel()
-        right = self._build_right_panel()
-        splitter.addWidget(left)
-        splitter.addWidget(center)
-        splitter.addWidget(right)
+        splitter.addWidget(self._build_left_column())
+        splitter.addWidget(self._build_center_panel())
+        splitter.addWidget(self._build_right_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setStretchFactor(2, 0)
-        # Вертикальный сплиттер: верхняя зона (изображение/панели) + нижняя (журнал/лог)
         v_splitter = QSplitter(Qt.Orientation.Vertical)
         top_widget = QWidget()
         top_layout = QVBoxLayout(top_widget)
@@ -525,7 +467,6 @@ class MainWindow(QMainWindow):
         return row
 
     def _build_left_column(self) -> QTabWidget:
-        """Один навигатор: у оператора полоска вкладок скрыта, у инженера — Инференс / Формирование банка."""
         self._left_tabs = QTabWidget()
         self._left_tabs.addTab(self._build_inference_tab(), "Инференс")
         self._left_tabs.addTab(self._build_training_tab(), "Формирование банка (Fit)")
@@ -542,7 +483,6 @@ class MainWindow(QMainWindow):
         self._folder_label.setWordWrap(True)
         self._btn_choose_folder = QPushButton("Папка с изображениями")
         self._btn_choose_folder.clicked.connect(self._choose_folder)
-
         self._btn_start = QPushButton("СТАРТ")
         self._btn_stop = QPushButton("СТОП")
         self._btn_start.clicked.connect(self._start_conveyor)
@@ -550,11 +490,9 @@ class MainWindow(QMainWindow):
         self._btn_stop.setEnabled(False)
         self._btn_start.setProperty("role", "start")
         self._btn_stop.setProperty("role", "stop")
-
         self._btn_model_info = QPushButton("Параметры банка памяти")
         self._btn_model_info.clicked.connect(self._show_model_info)
         self._btn_model_info.setEnabled(False)
-
         lay.addWidget(self._model_label)
         lay.addWidget(self._btn_choose_model)
         lay.addWidget(self._btn_model_info)
@@ -574,23 +512,19 @@ class MainWindow(QMainWindow):
         note.setWordWrap(True)
         note.setProperty("role", "hint")
         lay.addWidget(note)
-
         self._train_dir_label = QLabel("Папка НОРМЫ: не выбрана")
         self._train_dir_label.setWordWrap(True)
         self._btn_choose_train_dir = QPushButton("Выбрать папку с НОРМОЙ")
         self._btn_choose_train_dir.clicked.connect(self._choose_train_dir)
-
         self._train_save_label = QLabel("Файл банка: не выбран")
         self._train_save_label.setWordWrap(True)
         self._btn_save_model_as = QPushButton("Сохранить банк как…")
         self._btn_save_model_as.clicked.connect(self._choose_train_save_path)
-
         self._btn_train = QPushButton("СФОРМИРОВАТЬ БАНК")
         self._btn_train.setProperty("role", "train")
         self._btn_train.clicked.connect(self._start_training)
         self._btn_training_settings = QPushButton("Настройки формирования банка")
         self._btn_training_settings.clicked.connect(self._open_training_settings)
-
         lay.addWidget(self._train_dir_label)
         lay.addWidget(self._btn_choose_train_dir)
         lay.addWidget(self._train_save_label)
@@ -604,7 +538,6 @@ class MainWindow(QMainWindow):
         frame, lay = self._frame("Визуализация")
         self._image_view = ScaledImageLabel()
         lay.addWidget(self._image_view, stretch=1)
-
         gal = QHBoxLayout()
         self._btn_hist_prev = QPushButton("Предыдущее")
         self._btn_hist_next = QPushButton("Следующее")
@@ -617,7 +550,6 @@ class MainWindow(QMainWindow):
         gal.addWidget(self._btn_hist_next)
         self._update_gallery_buttons_state()
         lay.addLayout(gal)
-
         row = QHBoxLayout()
         row.addWidget(QLabel("Режим:"))
         self._mode_combo = QComboBox()
@@ -630,7 +562,6 @@ class MainWindow(QMainWindow):
 
     def _build_right_panel(self) -> QFrame:
         frame, lay = self._frame("Результаты")
-
         self._verdict_label = QLabel("—")
         self._verdict_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         vf = QFont()
@@ -639,17 +570,14 @@ class MainWindow(QMainWindow):
         self._verdict_label.setFont(vf)
         self._verdict_label.setMinimumHeight(100)
         lay.addWidget(self._verdict_label)
-
         self._score_value = QLabel("Score: —")
         self._time_value = QLabel("Время: — мс")
         lay.addWidget(self._score_value)
         lay.addWidget(self._time_value)
-
         self._threshold_auto_check = QCheckBox("Автоматический порог (из банка памяти)")
         self._threshold_auto_check.setChecked(True)
         self._threshold_auto_check.toggled.connect(self._on_auto_threshold_toggled)
         lay.addWidget(self._threshold_auto_check)
-
         lay.addWidget(QLabel("Ручной порог:"))
         self._threshold_spinbox = QDoubleSpinBox()
         self._threshold_spinbox.setDecimals(4)
@@ -664,7 +592,6 @@ class MainWindow(QMainWindow):
         )
         self._threshold_spinbox.valueChanged.connect(self._on_threshold_changed)
         lay.addWidget(self._threshold_spinbox)
-
         self._threshold_caption = QLabel("Порог: — (выберите файл банка .pt)")
         self._threshold_caption.setProperty("role", "hint")
         lay.addWidget(self._threshold_caption)
@@ -673,19 +600,14 @@ class MainWindow(QMainWindow):
 
     def _build_log_panel(self) -> QFrame:
         frame, flay = self._frame("Журнал / Лог")
-
-        # --- Tab bar row: menu button on the left, then tabs ---
         top_row = QHBoxLayout()
         top_row.setContentsMargins(0, 0, 0, 0)
         top_row.setSpacing(4)
-
-        # Кнопка-меню (⋯) с действиями
         self._log_menu_btn = QToolButton()
         self._log_menu_btn.setText("☰")
         self._log_menu_btn.setToolTip("Действия с журналом")
         self._log_menu_btn.setFixedSize(32, 32)
         self._log_menu_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-
         log_menu = QMenu(self._log_menu_btn)
         self._action_clear_journal = log_menu.addAction("Очистить журнал")
         self._action_clear_journal.triggered.connect(self._clear_journal)
@@ -693,20 +615,14 @@ class MainWindow(QMainWindow):
         self._action_export_excel = log_menu.addAction("Экспорт в Excel…")
         self._action_export_excel.triggered.connect(self._export_to_excel)
         self._log_menu_btn.setMenu(log_menu)
-
         top_row.addWidget(self._log_menu_btn, alignment=Qt.AlignmentFlag.AlignTop)
-
         self._bottom_tabs = QTabWidget()
         self._bottom_tabs.setDocumentMode(True)
         top_row.addWidget(self._bottom_tabs, stretch=1)
-
         flay.addLayout(top_row)
-
-        # --- Tab 1: Inference journal ---
         journal_widget = QWidget()
         journal_layout = QVBoxLayout(journal_widget)
         journal_layout.setContentsMargins(0, 0, 0, 0)
-
         self._log_table = QTableWidget(0, 4)
         self._log_table.setHorizontalHeaderLabels(["Время", "Имя файла", "Score", "Статус"])
         self._log_table.horizontalHeader().setStretchLastSection(True)
@@ -715,8 +631,6 @@ class MainWindow(QMainWindow):
         self._log_table.setSelectionBehavior(self._log_table.SelectionBehavior.SelectRows)
         journal_layout.addWidget(self._log_table)
         self._bottom_tabs.addTab(journal_widget, "Журнал")
-
-        # --- Tab 2: Terminal/stdout log ---
         self._log_text = QTextEdit()
         self._log_text.setReadOnly(True)
         self._log_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
@@ -725,22 +639,17 @@ class MainWindow(QMainWindow):
             "QTextEdit { background-color: #1a1a1c; color: #b0d0b0; border: none; }"
         )
         self._bottom_tabs.addTab(self._log_text, "Лог")
-
-        # Sync clear button visibility with active tab
         self._bottom_tabs.currentChanged.connect(self._on_bottom_tab_changed)
         self._on_bottom_tab_changed(0)
-
         return frame
 
     def _on_bottom_tab_changed(self, index: int) -> None:
-        is_journal = index == 0
-        self._log_menu_btn.setVisible(is_journal)
+        self._log_menu_btn.setVisible(index == 0)
 
     def _clear_journal(self) -> None:
         self._log_table.setRowCount(0)
 
     def _setup_log_capture(self) -> None:
-        """Перехватывает sys.stdout и sys.stderr — только print() и явный вывод программы."""
         signaller = _QtLogSignaller()
         signaller.message.connect(self._append_log_text)
         sys.stdout = _StdoutRedirector(sys.__stdout__, signaller)
@@ -748,7 +657,6 @@ class MainWindow(QMainWindow):
 
     def _append_log_text(self, text: str) -> None:
         self._log_text.append(text)
-        # Auto-scroll to bottom
         sb = self._log_text.verticalScrollBar()
         sb.setValue(sb.maximum())
 
@@ -762,7 +670,6 @@ class MainWindow(QMainWindow):
         pal.setColor(QPalette.ColorRole.Button, QColor(60, 60, 65))
         pal.setColor(QPalette.ColorRole.ButtonText, QColor(240, 240, 240))
         self.setPalette(pal)
-
         self.setStyleSheet(
             """
             QMainWindow, QWidget { background-color: #2d2d30; color: #e4e4e4; }
@@ -807,24 +714,20 @@ class MainWindow(QMainWindow):
             self._left_tabs.setCurrentIndex(0)
 
     def _current_threshold_raw(self) -> float:
-        """Активный порог в сырой шкале скоров."""
         if self._threshold_auto_check.isChecked():
             return float(self._model_auto_threshold_raw)
         return float(self._threshold_spinbox.value())
 
     def _sync_threshold_ui_from_metadata(self) -> None:
-        """Обновляет SpinBox и подпись после загрузки банка / формирования / model_ready."""
-        # Подстраиваем шаг под масштаб диапазона — удобнее крутить стрелками
         span = self._score_max - self._score_min
         if span > 0:
-            magnitude = span / 1000.0
             import math
+            magnitude = span / 1000.0
             exp = math.floor(math.log10(magnitude)) if magnitude > 0 else -4
             step = 10 ** exp
         else:
             step = 0.0001
         self._threshold_spinbox.setSingleStep(step)
-
         if self._threshold_auto_check.isChecked():
             self._threshold_spinbox.blockSignals(True)
             self._threshold_spinbox.setValue(self._model_auto_threshold_raw)
@@ -851,12 +754,9 @@ class MainWindow(QMainWindow):
         if n == 0 or self._current_history_idx < 0:
             self._gallery_label.setText("Нет результатов")
             return
-        self._gallery_label.setText(
-            f"Изображение {self._current_history_idx + 1} из {n}"
-        )
+        self._gallery_label.setText(f"Изображение {self._current_history_idx + 1} из {n}")
 
     def _apply_history_index(self) -> None:
-        """Подставляет текущую запись истории в поля отображения и перерисовывает UI."""
         if not self._history or self._current_history_idx < 0:
             self._last_path = ""
             self._last_raw_score = 0.0
@@ -870,7 +770,6 @@ class MainWindow(QMainWindow):
             self._refresh_verdict()
             self._image_view.set_source_pixmap(QPixmap())
             return
-
         e = self._history[self._current_history_idx]
         self._last_path = e.path
         self._last_raw_score = e.raw_score
@@ -899,7 +798,6 @@ class MainWindow(QMainWindow):
         if checked:
             self._sync_threshold_ui_from_metadata()
         else:
-            # Pre-fill spinbox with current auto value so user starts from a sensible number
             self._threshold_spinbox.blockSignals(True)
             self._threshold_spinbox.setValue(self._model_auto_threshold_raw)
             self._threshold_spinbox.blockSignals(False)
@@ -907,60 +805,40 @@ class MainWindow(QMainWindow):
         self._refresh_verdict()
 
     def _set_training_locked(self, locked: bool) -> None:
-        """Блокирует UI на время формирования банка (кроме закрытия окна)."""
         self._training_busy = locked
         if locked:
-            self._role_combo.setEnabled(False)
-            self._btn_choose_model.setEnabled(False)
-            self._btn_choose_folder.setEnabled(False)
-            self._btn_choose_train_dir.setEnabled(False)
-            self._btn_save_model_as.setEnabled(False)
-            self._btn_training_settings.setEnabled(False)
-            self._btn_train.setEnabled(False)
-            self._btn_start.setEnabled(False)
-            self._btn_stop.setEnabled(False)
-            self._mode_combo.setEnabled(False)
-            self._threshold_auto_check.setEnabled(False)
-            self._threshold_spinbox.setEnabled(False)
+            for w in (self._role_combo, self._btn_choose_model, self._btn_choose_folder,
+                      self._btn_choose_train_dir, self._btn_save_model_as,
+                      self._btn_training_settings, self._btn_train, self._btn_start,
+                      self._btn_stop, self._mode_combo, self._threshold_auto_check,
+                      self._threshold_spinbox):
+                w.setEnabled(False)
         else:
-            self._role_combo.setEnabled(True)
-            self._btn_choose_model.setEnabled(True)
-            self._btn_choose_folder.setEnabled(True)
-            self._btn_choose_train_dir.setEnabled(True)
-            self._btn_save_model_as.setEnabled(True)
-            self._btn_training_settings.setEnabled(True)
-            self._btn_train.setEnabled(True)
-            self._mode_combo.setEnabled(True)
-            self._threshold_auto_check.setEnabled(True)
+            for w in (self._role_combo, self._btn_choose_model, self._btn_choose_folder,
+                      self._btn_choose_train_dir, self._btn_save_model_as,
+                      self._btn_training_settings, self._btn_train, self._mode_combo,
+                      self._threshold_auto_check):
+                w.setEnabled(True)
             self._threshold_spinbox.setEnabled(not self._threshold_auto_check.isChecked())
             self._btn_stop.setEnabled(self._running)
             self._btn_start.setEnabled(not self._running)
 
     def _open_training_progress(self) -> None:
-        from PyQt6.QtWidgets import QDialogButtonBox
-
         dlg = QDialog(self)
         dlg.setWindowTitle("Формирование банка памяти PatchCore")
         dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
         dlg.setMinimumWidth(380)
-        # Запрещаем закрытие крестиком — только через кнопку «Отмена»
-        dlg.setWindowFlags(
-            dlg.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint
-        )
-
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
         layout = QVBoxLayout(dlg)
         layout.setSpacing(16)
         layout.setContentsMargins(20, 20, 20, 16)
-
         lbl = QLabel("Идёт формирование эталонного банка памяти…")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(lbl)
-
         bar = QProgressBar()
-        bar.setRange(0, 0)   # indeterminate (анимированная полоса)
+        bar.setRange(0, 0)
         bar.setTextVisible(False)
         layout.addWidget(bar)
-
         btn_cancel = QPushButton("Отмена")
         btn_cancel.setProperty("role", "stop")
         btn_cancel.setFixedHeight(32)
@@ -972,13 +850,11 @@ class MainWindow(QMainWindow):
                 self._training_worker.request_cancel()
 
         btn_cancel.clicked.connect(_on_cancel)
-
         btn_box = QHBoxLayout()
         btn_box.addStretch()
         btn_box.addWidget(btn_cancel)
         btn_box.addStretch()
         layout.addLayout(btn_box)
-
         dlg.show()
         self._training_progress = dlg
 
@@ -992,8 +868,7 @@ class MainWindow(QMainWindow):
         self._log_table.insertRow(0)
         items = [
             QTableWidgetItem(datetime.now().strftime("%H:%M:%S")),
-            QTableWidgetItem("—"),
-            QTableWidgetItem("—"),
+            QTableWidgetItem("—"), QTableWidgetItem("—"),
             QTableWidgetItem("Идёт формирование банка…"),
         ]
         for col, it in enumerate(items):
@@ -1013,21 +888,13 @@ class MainWindow(QMainWindow):
             self._log_table.setItem(0, col, it)
 
     def _choose_train_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(
-            self,
-            "Папка только с нормальными изображениями (без дефектов)",
-        )
+        path = QFileDialog.getExistingDirectory(self, "Папка только с нормальными изображениями (без дефектов)")
         if path:
             self._train_image_dir = path
             self._train_dir_label.setText(f"Папка НОРМЫ:\n{path}")
 
     def _choose_train_save_path(self) -> None:
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Сохранить эталонный банк памяти",
-            "",
-            "PyTorch (*.pt)",
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить эталонный банк памяти", "", "PyTorch (*.pt)")
         if path:
             if not path.lower().endswith(".pt"):
                 path += ".pt"
@@ -1038,53 +905,31 @@ class MainWindow(QMainWindow):
         if self._training_busy:
             return
         if self._running:
-            QMessageBox.warning(
-                self,
-                "Конвейер активен",
-                "Остановите конвейер перед запуском формирования банка.",
-            )
+            QMessageBox.warning(self, "Конвейер активен", "Остановите конвейер перед запуском формирования банка.")
             return
         if not self._train_image_dir:
-            QMessageBox.warning(
-                self,
-                "Нет данных",
-                "Выберите папку с изображениями нормального класса.",
-            )
+            QMessageBox.warning(self, "Нет данных", "Выберите папку с изображениями нормального класса.")
             return
         if not self._train_save_path:
             QMessageBox.warning(self, "Нет пути", "Укажите файл для сохранения .pt.")
             return
-        if (
-            self._training_settings.threshold_mode == "f1_optimal"
-            and not self._training_settings.validation_dir
-        ):
-            QMessageBox.warning(
-                self,
-                "Validation",
-                "Для F1-оптимального порога сначала укажите папку Validation в настройках формирования банка.",
-            )
+        if (self._training_settings.threshold_mode == "f1_optimal"
+                and not self._training_settings.validation_dir):
+            QMessageBox.warning(self, "Validation",
+                                "Для F1-оптимального порога сначала укажите папку Validation в настройках формирования банка.")
             return
         train_files = list_image_paths(self._train_image_dir, recursive=True)
         if not train_files:
-            QMessageBox.warning(
-                self,
-                "Пустая папка",
-                "В выбранной папке (включая вложенные подпапки) не найдено "
-                "поддерживаемых изображений.\n\n"
-                "Поддерживаемые форматы: JPEG, PNG, BMP, TIFF, WebP.",
-            )
+            QMessageBox.warning(self, "Пустая папка",
+                                "В выбранной папке (включая вложенные подпапки) не найдено "
+                                "поддерживаемых изображений.\n\nПоддерживаемые форматы: JPEG, PNG, BMP, TIFF, WebP.")
             return
-
         self._append_training_status_log()
         self._set_training_locked(True)
         self._open_training_progress()
-
         device = select_device(self._device_pref)
         self._training_worker = TrainingWorker(
-            self._train_image_dir,
-            self._train_save_path,
-            device,
-            self._training_settings,
+            self._train_image_dir, self._train_save_path, device, self._training_settings,
             metrics_val_dir=self._training_settings.metrics_val_dir,
             metrics_mask_dir=self._training_settings.metrics_mask_dir,
         )
@@ -1101,28 +946,20 @@ class MainWindow(QMainWindow):
             if dlg.settings is not None:
                 self._training_settings = dlg.settings
 
-    def _on_training_success(
-        self, threshold: float, score_min: float, score_max: float, metrics: dict
-    ) -> None:
+    def _on_training_success(self, threshold: float, score_min: float, score_max: float, metrics: dict) -> None:
         self._close_training_progress()
         self._set_training_locked(False)
-
         if self._model_state is None:
             self._model_state = {}
         self._model_state["metrics"] = metrics
-
         self._model_auto_threshold_raw = float(threshold)
         self._score_min = float(score_min)
         self._score_max = float(score_max)
         self._sync_threshold_ui_from_metadata()
         self._append_training_success_log(threshold)
         dlg = BankFormationResultDialog(
-            threshold=threshold,
-            score_min=score_min,
-            score_max=score_max,
-            save_path=self._train_save_path,
-            metrics=metrics,
-            parent=self,
+            threshold=threshold, score_min=score_min, score_max=score_max,
+            save_path=self._train_save_path, metrics=metrics, parent=self,
         )
         dlg.exec()
 
@@ -1132,52 +969,35 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Ошибка формирования банка", message)
 
     def _on_training_cancelled(self) -> None:
-        """Пользователь нажал «Отмена» — банк не сохранён, UI разблокируется."""
         self._close_training_progress()
         self._set_training_locked(False)
-        # Убираем строку «Идёт формирование…» из журнала (она была первой строкой)
         if self._log_table.rowCount() > 0:
             first_status = self._log_table.item(0, 3)
             if first_status and "формирование" in first_status.text().lower():
                 self._log_table.removeRow(0)
         self._append_log_row("—", 0.0, "ОТМЕНЕНО")
-        QMessageBox.information(
-            self,
-            "Формирование банка",
-            "Формирование эталонного банка памяти отменено.\n"
-            "Файл банка не был сохранён.",
-        )
+        QMessageBox.information(self, "Формирование банка",
+                                "Формирование эталонного банка памяти отменено.\nФайл банка не был сохранён.")
 
     def _on_training_warning(self, message: str) -> None:
-        """Некритичное предупреждение: банк сформирован, но метрики не посчитались."""
         QMessageBox.warning(self, "Предупреждение — оценка качества", message)
 
     def _on_training_worker_finished(self) -> None:
         self._training_worker = None
 
     # -------------------------------------------------------------------------
-    # FIX: Асинхронная загрузка метаданных банка памяти
+    # Асинхронная загрузка метаданных банка памяти
     # -------------------------------------------------------------------------
 
     def _choose_model(self) -> None:
-        """
-        FIX: torch.load вынесен в MetaLoadWorker — главный поток не блокируется.
-        Кнопки остаются активными пока идёт чтение файла.
-        """
         path, _ = QFileDialog.getOpenFileName(self, "Выбор файла банка памяти", "", "PyTorch (*.pt)")
         if not path:
             return
-
-        # Отменяем предыдущую загрузку метаданных если она ещё идёт
         self._cancel_meta_loader()
-
-        # Временно отключаем кнопку выбора банка чтобы не запустить два загрузчика
         self._btn_choose_model.setEnabled(False)
         self._btn_model_info.setEnabled(False)
         self._model_label.setText(f"Эталонный банк памяти: загрузка…\n{path}")
-
         self._meta_loader = MetaLoadWorker(path)
-        # Передаём path через замыкание чтобы слот знал, к какому файлу относятся данные
         self._meta_loader.meta_ready.connect(
             lambda smin, smax, thr, state, p=path: self._on_meta_ready(p, smin, smax, thr, state)
         )
@@ -1187,15 +1007,8 @@ class MainWindow(QMainWindow):
         self._meta_loader.finished.connect(self._on_meta_loader_finished)
         self._meta_loader.start()
 
-    def _on_meta_ready(
-        self,
-        path: str,
-        score_min: float,
-        score_max: float,
-        threshold_raw: float,
-        state: dict,
-    ) -> None:
-        """Вызывается из главного потока через сигнал после успешного чтения метаданных."""
+    def _on_meta_ready(self, path: str, score_min: float, score_max: float,
+                       threshold_raw: float, state: dict) -> None:
         self._model_path = path
         self._model_state = state
         self._score_min = score_min
@@ -1207,21 +1020,15 @@ class MainWindow(QMainWindow):
         self._start_preload_worker(path)
 
     def _on_meta_failed(self, path: str, message: str) -> None:
-        """Вызывается из главного потока через сигнал при ошибке чтения метаданных."""
         self._model_label.setText("Эталонный банк памяти: не выбран")
-        QMessageBox.critical(
-            self,
-            "Файл банка памяти",
-            f"Не удалось прочитать метаданные:\n{path}\n\n{message}",
-        )
+        QMessageBox.critical(self, "Файл банка памяти",
+                             f"Не удалось прочитать метаданные:\n{path}\n\n{message}")
 
     def _on_meta_loader_finished(self) -> None:
-        """Восстанавливаем кнопку «Обзор» после завершения загрузки метаданных."""
         self._btn_choose_model.setEnabled(True)
         self._meta_loader = None
 
     def _cancel_meta_loader(self) -> None:
-        """Останавливает текущий MetaLoadWorker если он ещё работает."""
         if self._meta_loader is not None and self._meta_loader.isRunning():
             self._meta_loader.wait(2_000)
         self._meta_loader = None
@@ -1239,19 +1046,15 @@ class MainWindow(QMainWindow):
             self._folder_label.setText(f"Папка:\n{path}")
 
     # -------------------------------------------------------------------------
-    # FIX: Конвейер — исправленные СТАРТ / СТОП
+    # Конвейер — СТАРТ / СТОП
     # -------------------------------------------------------------------------
 
     def _start_conveyor(self) -> None:
-        # FIX: защита от двойного нажатия
         if self._running:
             return
         if self._training_busy:
-            QMessageBox.warning(
-                self,
-                "Формирование банка",
-                "Дождитесь завершения формирования банка перед запуском конвейера.",
-            )
+            QMessageBox.warning(self, "Формирование банка",
+                                "Дождитесь завершения формирования банка перед запуском конвейера.")
             return
         if not self._model_path:
             QMessageBox.warning(self, "Нет банка памяти", "Укажите файл эталонного банка памяти .pt.")
@@ -1261,8 +1064,10 @@ class MainWindow(QMainWindow):
             return
         paths = list_image_paths(self._image_dir, recursive=False)
         if not paths:
-            QMessageBox.warning(self, "Пусто", "В папке нет поддерживаемых изображений.\n\nПоддерживаемые форматы: JPEG, PNG, BMP, TIFF, WebP.")
+            QMessageBox.warning(self, "Пусто",
+                                "В папке нет поддерживаемых изображений.\n\nПоддерживаемые форматы: JPEG, PNG, BMP, TIFF, WebP.")
             return
+
         self._image_paths = paths
         self._conveyor_index = 0
         self._processed_count = 0
@@ -1270,31 +1075,51 @@ class MainWindow(QMainWindow):
         self._current_history_idx = -1
         self._apply_history_index()
 
-        # FIX: сначала выставляем флаг и состояние кнопок
         self._running = True
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
 
         device = select_device(self._device_pref)
 
-        # Используем предзагрузочный воркер если он загрузил тот же файл
+        # FIX: проверяем is not None (а не isRunning()) — preload-воркер может
+        # уже завершить QThread после успешной загрузки, но модель в памяти
+        # и очередь _tasks работоспособна до получения sentinel None.
         if (
             self._preload_worker is not None
-            and self._preload_worker.isRunning()
             and self._preload_model_path == self._model_path
         ):
             self._worker = self._preload_worker
             self._preload_worker = None
             self._preload_model_path = ""
-            # FIX: подключаем сигналы только сейчас, model_ready мог уже сработать
             self._worker.inference_done.connect(self._on_inference_done)
             self._worker.inference_failed.connect(self._on_inference_failed)
             self._worker.finished.connect(self._on_worker_finished)
+
             if self._worker.is_model_loaded:
-                # Банк уже готов — немедленно запускаем
+                # Модель уже в памяти — запускаем немедленно
                 self._on_timer_tick()
                 self._timer.start()
-            # Иначе _on_model_ready придёт чуть позже и запустит таймер
+            elif self._worker.isRunning():
+                # Поток ещё грузит — _on_model_ready запустит таймер
+                pass
+            else:
+                # Поток завершился, но is_model_loaded == False —
+                # значит была ошибка загрузки (inference_failed уже эмитирован).
+                # Отключаем сигналы мёртвого воркера перед заменой,
+                # иначе объект остаётся в памяти удерживаемый Qt-соединениями.
+                dead = self._worker
+                dead.inference_done.disconnect(self._on_inference_done)
+                dead.inference_failed.disconnect(self._on_inference_failed)
+                dead.finished.disconnect(self._on_worker_finished)
+
+                # Создаём новый воркер для чистой попытки.
+                self._worker = InferenceWorker(self._model_path, device)
+                self._worker.is_model_loaded = False
+                self._worker.model_ready.connect(self._on_model_ready)
+                self._worker.inference_done.connect(self._on_inference_done)
+                self._worker.inference_failed.connect(self._on_inference_failed)
+                self._worker.finished.connect(self._on_worker_finished)
+                self._worker.start()
         else:
             self._discard_preload_worker()
             self._worker = InferenceWorker(self._model_path, device)
@@ -1304,15 +1129,12 @@ class MainWindow(QMainWindow):
             self._worker.inference_failed.connect(self._on_inference_failed)
             self._worker.finished.connect(self._on_worker_finished)
             self._worker.start()
-            # Таймер запустится в _on_model_ready
 
     def _start_preload_worker(self, model_path: str) -> None:
-        """Запускает фоновую загрузку банка памяти сразу при его выборе."""
         self._discard_preload_worker()
         device = select_device(self._device_pref)
         w = InferenceWorker(model_path, device)
         w.is_model_loaded = False
-        # FIX: model_ready от preload-воркера обновляет метаданные в UI
         w.model_ready.connect(self._on_model_ready)
         self._preload_worker = w
         self._preload_model_path = model_path
@@ -1320,39 +1142,20 @@ class MainWindow(QMainWindow):
         print(f"[Preload] Фоновая загрузка банка памяти: {model_path}")
 
     def _discard_preload_worker(self) -> None:
-        """
-        Останавливает и удаляет предзагрузочный воркер.
-
-        FIX: используем request_stop() вместо блокирующего wait() чтобы
-        не фризить GUI. Воркер завершится самостоятельно через sentinel None.
-        """
         if self._preload_worker is not None:
             self._preload_worker.request_stop()
-            # Не ждём здесь — позволяем потоку завершиться самостоятельно.
-            # Qt удалит объект QThread когда он отправит сигнал finished.
             self._preload_worker = None
             self._preload_model_path = ""
 
     def _stop_conveyor(self) -> None:
-        """
-        FIX: не блокируем GUI через worker.wait().
-        Таймер останавливаем немедленно; воркер завершится сам через sentinel.
-        """
         self._timer.stop()
         self._running = False
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
         if self._worker is not None:
             self._worker.request_stop()
-            # FIX: убрали worker.wait(10_000) — это блокировало GUI на 10 секунд.
-            # Воркер получит sentinel None из очереди и завершится самостоятельно.
-            # _on_worker_finished обнулит self._worker когда поток закончится.
 
     def _on_worker_finished(self) -> None:
-        """
-        FIX: обнуляем _worker только здесь, а не в _stop_conveyor.
-        Это устраняет потенциальный AttributeError в _on_timer_tick.
-        """
         self._worker = None
 
     def _on_model_ready(self, score_min: float, score_max: float, threshold_raw: float) -> None:
@@ -1364,72 +1167,48 @@ class MainWindow(QMainWindow):
         sender = self.sender()
 
         if self._running and self._worker is not None and sender is self._worker:
-            # Конвейер уже запущен и именно этот воркер загрузился — стартуем таймер
             self._worker.is_model_loaded = True
             self._on_timer_tick()
             self._timer.start()
         elif self._preload_worker is not None and sender is self._preload_worker:
-            # Это предзагрузка в фоне — просто помечаем готовность
             self._preload_worker.is_model_loaded = True
 
     def _on_timer_tick(self) -> None:
-        # FIX: проверяем _worker на None перед использованием
         if not self._running or self._worker is None:
             self._timer.stop()
             return
         if self._conveyor_index >= len(self._image_paths):
-            # Все задания выданы — останавливаем таймер, ждём обработки последних
             self._timer.stop()
             return
         path = self._image_paths[self._conveyor_index]
         self._conveyor_index += 1
         self._worker.enqueue_path(path)
 
-    def _on_inference_done(
-        self,
-        path: str,
-        raw_score: float,
-        _norm_score: float,
-        anomaly_map: np.ndarray,
-        elapsed_ms: float,
-    ) -> None:
+    def _on_inference_done(self, path: str, raw_score: float, _norm_score: float,
+                           anomaly_map: np.ndarray, elapsed_ms: float) -> None:
         rgb = load_display_rgb_224(path)
         amap = np.asarray(anomaly_map, dtype=np.float32)
         entry = InferenceHistoryEntry(
-            path=path,
-            raw_score=float(raw_score),
-            rgb=np.copy(rgb),
-            anomaly_map=np.copy(amap),
-            elapsed_ms=float(elapsed_ms),
+            path=path, raw_score=float(raw_score),
+            rgb=np.copy(rgb), anomaly_map=np.copy(amap), elapsed_ms=float(elapsed_ms),
         )
         self._history.append(entry)
         self._current_history_idx = len(self._history) - 1
         self._apply_history_index()
-
         short_name = Path(path).name
         thr = self._current_threshold_raw()
         status = "БРАК" if raw_score >= thr else "НОРМА"
         self._append_log_row(short_name, raw_score, status)
-
         self._processed_count += 1
-        # FIX: финализация только когда все задания выданы И все обработаны
         self._try_finalize_conveyor()
 
     def _try_finalize_conveyor(self) -> None:
-        """
-        Завершает сессию когда все кадры выданы в очередь И все обработаны воркером.
-
-        FIX: добавлена проверка _running чтобы не вызывать _stop_conveyor дважды
-        (например, если пользователь уже нажал СТОП вручную).
-        """
         if not self._running:
             return
         if not self._image_paths:
             return
-        # Ещё не все задания отправлены в очередь
         if self._conveyor_index < len(self._image_paths):
             return
-        # Ещё не все результаты получены
         if self._processed_count < len(self._image_paths):
             return
         self._stop_conveyor()
@@ -1455,13 +1234,11 @@ class MainWindow(QMainWindow):
         if is_defect:
             self._verdict_label.setText("БРАК")
             self._verdict_label.setStyleSheet(
-                "background-color: #8b2020; color: white; border-radius: 6px; padding: 12px;"
-            )
+                "background-color: #8b2020; color: white; border-radius: 6px; padding: 12px;")
         else:
             self._verdict_label.setText("НОРМА")
             self._verdict_label.setStyleSheet(
-                "background-color: #1b6b3a; color: white; border-radius: 6px; padding: 12px;"
-            )
+                "background-color: #1b6b3a; color: white; border-radius: 6px; padding: 12px;")
 
     def _refresh_image_view(self) -> None:
         if self._last_rgb is None or self._last_map is None:
@@ -1480,8 +1257,7 @@ class MainWindow(QMainWindow):
         if mode == ViewMode.ORIGINAL:
             out = rgb
         elif mode == ViewMode.HEATMAP:
-            heat_rgb = cv2.cvtColor(heat_bgr, cv2.COLOR_BGR2RGB)
-            out = heat_rgb
+            out = cv2.cvtColor(heat_bgr, cv2.COLOR_BGR2RGB)
         else:
             span = vis_max - float(self._score_min)
             if span > 1e-12:
@@ -1498,17 +1274,14 @@ class MainWindow(QMainWindow):
         self._log_table.insertRow(0)
         time_s = datetime.now().strftime("%H:%M:%S")
         items = [
-            QTableWidgetItem(time_s),
-            QTableWidgetItem(filename),
-            QTableWidgetItem(f"{score:.4f}"),
-            QTableWidgetItem(status),
+            QTableWidgetItem(time_s), QTableWidgetItem(filename),
+            QTableWidgetItem(f"{score:.4f}"), QTableWidgetItem(status),
         ]
         for col, it in enumerate(items):
             it.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._log_table.setItem(0, col, it)
 
     def closeEvent(self, event) -> None:
-        """Перехватываем закрытие окна для сохранения UI и остановки процессов."""
         if self._running:
             self._stop_conveyor()
         self._discard_preload_worker()
@@ -1517,49 +1290,37 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _save_ui_state(self) -> None:
-        """Сохраняет состояние интерфейса в QSettings."""
         settings = QSettings("VKR", "PatchCoreApp")
-
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("role_index", self._role_combo.currentIndex())
         settings.setValue("mode_index", self._mode_combo.currentIndex())
-
         settings.setValue("model_path", self._model_path)
         settings.setValue("image_dir", self._image_dir)
         settings.setValue("train_image_dir", self._train_image_dir)
         settings.setValue("train_save_path", self._train_save_path)
-
         settings.setValue("threshold_auto", self._threshold_auto_check.isChecked())
         settings.setValue("threshold_manual", self._threshold_spinbox.value())
 
     def _load_ui_state(self) -> None:
-        """Загружает состояние интерфейса при старте программы."""
         settings = QSettings("VKR", "PatchCoreApp")
-
         geom = settings.value("geometry")
         if geom is not None:
             self.restoreGeometry(geom)
         else:
             self.showMaximized()
-
         self._role_combo.setCurrentIndex(settings.value("role_index", 0, type=int))
         self._mode_combo.setCurrentIndex(settings.value("mode_index", 0, type=int))
         self._threshold_auto_check.setChecked(settings.value("threshold_auto", True, type=bool))
         self._threshold_spinbox.setValue(settings.value("threshold_manual", 0.5, type=float))
-
         self._image_dir = settings.value("image_dir", "", type=str)
         if self._image_dir:
             self._folder_label.setText(f"Папка:\n{self._image_dir}")
-
         self._train_image_dir = settings.value("train_image_dir", "", type=str)
         if self._train_image_dir:
             self._train_dir_label.setText(f"Папка НОРМЫ:\n{self._train_image_dir}")
-
         self._train_save_path = settings.value("train_save_path", "", type=str)
         if self._train_save_path:
             self._train_save_label.setText(f"Файл банка:\n{self._train_save_path}")
-
-        # FIX: восстанавливаем метаданные банка асинхронно через MetaLoadWorker
         saved_model = settings.value("model_path", "", type=str)
         if saved_model and Path(saved_model).is_file():
             self._model_path = saved_model
@@ -1567,12 +1328,7 @@ class MainWindow(QMainWindow):
             self._try_restore_model_metadata_async(saved_model)
 
     def _try_restore_model_metadata_async(self, path: str) -> None:
-        """
-        FIX: асинхронно восстанавливает метаданные без блокировки GUI.
-        Заменяет старый синхронный _try_restore_model_metadata.
-        """
         self._btn_choose_model.setEnabled(False)
-
         loader = MetaLoadWorker(path)
         loader.meta_ready.connect(
             lambda smin, smax, thr, state, p=path: self._on_restore_meta_ready(p, smin, smax, thr, state)
@@ -1584,15 +1340,8 @@ class MainWindow(QMainWindow):
         self._meta_loader = loader
         loader.start()
 
-    def _on_restore_meta_ready(
-        self,
-        path: str,
-        score_min: float,
-        score_max: float,
-        threshold_raw: float,
-        state: dict,
-    ) -> None:
-        """Восстановление метаданных при старте — успех."""
+    def _on_restore_meta_ready(self, path: str, score_min: float, score_max: float,
+                                threshold_raw: float, state: dict) -> None:
         self._model_state = state
         self._score_min = score_min
         self._score_max = score_max
@@ -1603,50 +1352,31 @@ class MainWindow(QMainWindow):
         self._start_preload_worker(path)
 
     def _on_restore_meta_failed(self, path: str, msg: str) -> None:
-        """Восстановление метаданных при старте — ошибка (тихо, без диалога)."""
         self._model_path = ""
         self._model_label.setText("Эталонный банк памяти: не выбран")
         print(f"[UI State] Не удалось восстановить метаданные банка памяти: {msg}")
 
     def _on_restore_meta_finished(self) -> None:
-        """Разблокируем кнопку после завершения фонового восстановления."""
         self._btn_choose_model.setEnabled(True)
         self._meta_loader = None
 
     def _export_to_excel(self) -> None:
-        """Собирает параметры банка памяти, результаты инференса и метрики качества в Excel."""
         if not self._history:
             QMessageBox.warning(self, "Пусто", "Нет данных для экспорта. Сначала запустите конвейер.")
             return
-
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Сохранить отчет",
-            "PatchCore_Report.xlsx",
-            "Excel Files (*.xlsx)"
-        )
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить отчет", "PatchCore_Report.xlsx", "Excel Files (*.xlsx)")
         if not path:
             return
-
         if not path.lower().endswith(".xlsx"):
             path += ".xlsx"
-
         try:
             import pandas as pd
         except ImportError:
-            QMessageBox.critical(
-                self,
-                "Ошибка",
-                "Для экспорта в Excel необходимы библиотеки pandas и openpyxl.\nУстановите их командой: pip install pandas openpyxl"
-            )
+            QMessageBox.critical(self, "Ошибка",
+                                 "Для экспорта в Excel необходимы библиотеки pandas и openpyxl.\nУстановите их командой: pip install pandas openpyxl")
             return
-
         try:
-            # --- 1. Лист: Параметры банка памяти ---
-            model_info = {
-                "Параметр": ["Путь к файлу банка"],
-                "Значение": [self._model_path]
-            }
+            model_info = {"Параметр": ["Путь к файлу банка"], "Значение": [self._model_path]}
             if self._model_state:
                 for k, v in self._model_state.items():
                     if k != "metrics" and isinstance(v, (int, float, str, tuple, list)):
@@ -1654,53 +1384,32 @@ class MainWindow(QMainWindow):
                         model_info["Значение"].append(str(v))
             df_model = pd.DataFrame(model_info)
 
-            # --- 2. Лист: Метрики качества ---
             metrics_data = {"Показатель": [], "Значение": []}
             if self._model_state and "metrics" in self._model_state:
                 m = self._model_state["metrics"]
-                mapping = {
-                    "image_auroc": "Image AUROC (Global)",
-                    "pixel_auroc": "Pixel AUROC (Localization)",
-                    "pro_score": "PRO Score",
-                }
-                for key, label in mapping.items():
+                for key, label in [("image_auroc", "Image AUROC"), ("pixel_auroc", "Pixel AUROC"), ("pro_score", "PRO Score")]:
                     if key in m:
                         metrics_data["Показатель"].append(label)
                         metrics_data["Значение"].append(round(float(m[key]), 4))
-
             if not metrics_data["Показатель"]:
                 metrics_data["Показатель"].append("Статус")
                 metrics_data["Значение"].append("Метрики не рассчитывались")
-
             df_metrics = pd.DataFrame(metrics_data)
 
-            # --- 3. Лист: Результаты инференса ---
-            results_data = {
-                "Имя файла": [],
-                "Score (сырой)": [],
-                "Вердикт": [],
-                "Время (мс)": [],
-                "Полный путь": []
-            }
-
             thr = self._current_threshold_raw()
+            results_data = {"Имя файла": [], "Score (сырой)": [], "Вердикт": [], "Время (мс)": [], "Полный путь": []}
             for entry in self._history:
-                is_defect = entry.raw_score >= thr
                 results_data["Имя файла"].append(Path(entry.path).name)
                 results_data["Score (сырой)"].append(round(entry.raw_score, 6))
-                results_data["Вердикт"].append("БРАК" if is_defect else "НОРМА")
+                results_data["Вердикт"].append("БРАК" if entry.raw_score >= thr else "НОРМА")
                 results_data["Время (мс)"].append(round(entry.elapsed_ms, 2))
                 results_data["Полный путь"].append(entry.path)
-
             df_results = pd.DataFrame(results_data)
 
-            # --- Запись в файл ---
             with pd.ExcelWriter(path, engine='openpyxl') as writer:
                 df_model.to_excel(writer, sheet_name="Параметры банка памяти", index=False)
                 df_metrics.to_excel(writer, sheet_name="Метрики качества", index=False)
                 df_results.to_excel(writer, sheet_name="Результаты", index=False)
-
             QMessageBox.information(self, "Успех", f"Отчет успешно сохранен в файл:\n{path}")
-
         except Exception as e:
             QMessageBox.critical(self, "Ошибка сохранения", f"Не удалось сохранить файл Excel:\n{e}")

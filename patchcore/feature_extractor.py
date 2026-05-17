@@ -31,145 +31,29 @@ _DEFAULT_BACKBONE: str = "wide_resnet50_2"
 _DEFAULT_LAYERS: tuple[str, ...] = ("layer2", "layer3")
 
 # Размер окрестности p для локальной агрегации.
-# p=3 означает квадрат 3×3 вокруг каждой позиции (h, w).
 _PATCH_SIZE: int = 3
 
 # Шаг s при формировании патч-коллекции.
 _STRIDE: int = 1
 
 # Целевая размерность каждого финального патч-вектора.
-# layer2 (512) + layer3 (1024) = 1536 - после адаптивного пулинга - 1024.
+# layer2 (512) + layer3 (1024) = 1536 → после адаптивного пулинга → 1024.
 _TARGET_DIM: int = 1024
 
 
-def _get_bundled_weights_dir() -> Path | None:
-    """
-    Возвращает путь к папке bundled_weights/, упакованной PyInstaller.
-
-    В скомпилированном .exe PyInstaller распаковывает --add-data ресурсы
-    во временную папку sys._MEIPASS. В режиме разработки ищем bundled_weights/
-    рядом с корнем проекта (две директории вверх от этого файла).
-
-    Returns:
-        Path к папке с весами если она существует, иначе None.
-    """
-    # 1. Сборка PyInstaller: sys._MEIPASS содержит распакованные ресурсы
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass is not None:
-        candidate = Path(meipass) / "bundled_weights"
-        if candidate.is_dir():
-            return candidate
-
-    # 2. Режим разработки: bundled_weights/ в корне репозитория
-    #    (два уровня вверх от patchcore/feature_extractor.py)
-    dev_candidate = Path(__file__).resolve().parent.parent / "bundled_weights"
-    if dev_candidate.is_dir():
-        return dev_candidate
-
-    return None
-
-
-def _load_backbone_weights_offline(
-    model: nn.Module,
-    backbone_name: str,
-    weights_enum: WeightsEnum,
-) -> bool:
-    """
-    Пытается загрузить веса из локальной папки bundled_weights/.
-
-    Алгоритм поиска файла:
-      1. Берём URL из weights_enum.url → имя файла (последний сегмент URL).
-      2. Ищем этот файл в bundled_weights/.
-      3. Если нашли — загружаем через weights_enum.transforms() метаданные
-         и state_dict через torch.load, применяем к модели.
-
-    Args:
-        model:         Экземпляр backbone (уже создан без весов).
-        backbone_name: Имя backbone-а для диагностических сообщений.
-        weights_enum:  Объект WeightsEnum (например Wide_ResNet50_2_Weights.DEFAULT).
-
-    Returns:
-        True если веса загружены из локального файла, False если файл не найден.
-    """
-    bundled_dir = _get_bundled_weights_dir()
-    if bundled_dir is None:
-        return False
-
-    # Имя файла совпадает с именем в URL torchvision
-    url: str = weights_enum.url  # type: ignore[attr-defined]
-    filename = url.split("/")[-1]
-    weight_file = bundled_dir / filename
-
-    if not weight_file.is_file():
-        # Попытка поиска по частичному имени на случай расхождения версий
-        stem = filename.split("-")[0]  # например "wide_resnet50_2"
-        candidates = list(bundled_dir.glob(f"{stem}*.pth"))
-        if not candidates:
-            return False
-        weight_file = candidates[0]
-
-    print(f"[FeatureExtractor] Загрузка весов из локального файла: {weight_file.name}")
-    state_dict = torch.load(weight_file, map_location="cpu", weights_only=True)
-    model.load_state_dict(state_dict)
-    return True
-
-
-def _build_backbone(backbone_name: str) -> nn.Module:
-    """
-    Создаёт backbone и загружает веса.
-
-    Стратегия (offline-first):
-      1. Создаём модель БЕЗ весов (weights=None) — быстро, без сети.
-      2. Пытаемся загрузить веса из bundled_weights/ (работает offline).
-      3. Если локальный файл не найден — загружаем через torchvision
-         стандартным способом (требует интернет, но не упадёт в dev-режиме).
-
-    Args:
-        backbone_name: Имя модели из torchvision.models (например 'wide_resnet50_2').
-
-    Returns:
-        Инициализированный backbone nn.Module с загруженными весами ImageNet.
-
-    Raises:
-        ValueError: Если backbone_name не найден в torchvision.models.
-    """
-    backbone_factory = tv_models.__dict__.get(backbone_name)
-    if backbone_factory is None:
-        raise ValueError(f"Неизвестный backbone: {backbone_name}")
-
-    # Шаг 1: создаём модель без весов
-    model: nn.Module = backbone_factory(weights=None)
-
-    # Шаг 2: пытаемся загрузить локально
-    weights_enum = _get_default_weights_enum(backbone_name)
-    if weights_enum is not None:
-        loaded = _load_backbone_weights_offline(model, backbone_name, weights_enum)
-        if loaded:
-            return model
-        # Локальный файл не найден — предупреждаем и падаем на онлайн-загрузку
-        print(
-            f"[FeatureExtractor] Локальные веса для '{backbone_name}' не найдены "
-            f"в bundled_weights/. Загрузка из интернета (torchvision)…"
-        )
-
-    # Шаг 3: онлайн-загрузка через torchvision (fallback для dev-режима)
-    model = backbone_factory(weights="DEFAULT")
-    return model
-
-
+# ---------------------------------------------------------------------------
+# Таблица соответствий backbone → WeightsEnum.DEFAULT
+# ---------------------------------------------------------------------------
 def _get_default_weights_enum(backbone_name: str) -> WeightsEnum | None:
     """
-    Возвращает объект WeightsEnum.DEFAULT для заданного backbone-а.
+    Возвращает WeightsEnum.DEFAULT для заданного backbone-а.
 
-    Используется для получения URL файла весов и последующей локальной загрузки.
-
-    Args:
-        backbone_name: Имя backbone-а из torchvision.models.
+    Явная таблица надёжнее интроспекции через getattr — не зависит от
+    внутренних соглашений об именовании в разных версиях torchvision.
 
     Returns:
-        WeightsEnum.DEFAULT или None если не удалось определить.
+        WeightsEnum.DEFAULT или None если backbone не найден в таблице.
     """
-    # Явная таблица соответствий — надёжнее чем интроспекция через getattr
     from torchvision.models import (
         Wide_ResNet50_2_Weights,
         Wide_ResNet101_2_Weights,
@@ -180,7 +64,8 @@ def _get_default_weights_enum(backbone_name: str) -> WeightsEnum | None:
         ResNeXt50_32X4D_Weights,
         ResNeXt101_32X8D_Weights,
     )
-    _WEIGHTS_MAP: dict[str, WeightsEnum] = {
+
+    _TABLE: dict[str, WeightsEnum] = {
         "wide_resnet50_2":   Wide_ResNet50_2_Weights.DEFAULT,
         "wide_resnet101_2":  Wide_ResNet101_2_Weights.DEFAULT,
         "resnet18":          ResNet18_Weights.DEFAULT,
@@ -190,8 +75,191 @@ def _get_default_weights_enum(backbone_name: str) -> WeightsEnum | None:
         "resnext50_32x4d":   ResNeXt50_32X4D_Weights.DEFAULT,
         "resnext101_32x8d":  ResNeXt101_32X8D_Weights.DEFAULT,
     }
-    return _WEIGHTS_MAP.get(backbone_name)
+    return _TABLE.get(backbone_name)
 
+
+# ---------------------------------------------------------------------------
+# Поиск папки bundled_weights/
+# ---------------------------------------------------------------------------
+def _get_bundled_weights_dir() -> Path | None:
+    """
+    Возвращает Path к папке bundled_weights/ или None если она не найдена.
+
+    Порядок поиска:
+      1. sys._MEIPASS — PyInstaller распаковывает --add-data ресурсы сюда.
+         Этот атрибут существует ТОЛЬКО в скомпилированном .exe.
+      2. Корень репозитория — один уровень выше папки patchcore/.
+         Путь: patchcore/feature_extractor.py → patchcore/ → repo_root/.
+         Используется при локальной офлайн-сборке или после запуска
+         scripts/download_weights.py разработчиком.
+
+    Важно: функция возвращает None если папка не существует физически.
+    Наличие sys._MEIPASS без папки bundled_weights/ внутри означает
+    что сборка была выполнена без --add-data bundled_weights — это
+    обрабатывается явной ошибкой в _build_backbone().
+    """
+    # 1. Сборка PyInstaller: sys._MEIPASS существует только в .exe
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass is not None:
+        candidate = Path(meipass) / "bundled_weights"
+        if candidate.is_dir():
+            return candidate
+        # FIX: папка не найдена внутри .exe — возвращаем специальный sentinel.
+        # _build_backbone() увидит _MEIPASS и выдаст понятную ошибку
+        # вместо попытки онлайн-загрузки (которая гарантированно упадёт в .exe).
+        return None
+
+    # 2. Корень репозитория при запуске из IDE / исходников.
+    # FIX: скрипт лежит в patchcore/feature_extractor.py,
+    # значит .parent = patchcore/, .parent.parent = repo_root/.
+    repo_root = Path(__file__).resolve().parent.parent
+    candidate = repo_root / "bundled_weights"
+    if candidate.is_dir():
+        return candidate
+
+    return None
+
+
+def _is_pyinstaller_bundle() -> bool:
+    """True если код выполняется внутри скомпилированного PyInstaller .exe."""
+    return getattr(sys, "_MEIPASS", None) is not None
+
+
+# ---------------------------------------------------------------------------
+# Поиск файла весов в папке bundled_weights/
+# ---------------------------------------------------------------------------
+def _find_weight_file(bundled_dir: Path, weights_enum: WeightsEnum) -> Path | None:
+    """
+    Ищет .pth файл весов в папке bundled_weights/.
+
+    Сначала ищет по точному имени из URL torchvision, затем по префиксу
+    на случай расхождения хеш-суффикса между версиями torchvision.
+
+    Args:
+        bundled_dir:  Путь к папке bundled_weights/.
+        weights_enum: WeightsEnum для получения URL и имени файла.
+
+    Returns:
+        Path к найденному файлу или None.
+    """
+    url: str = weights_enum.url  # type: ignore[attr-defined]
+    # Пример: https://download.pytorch.org/models/wide_resnet50_2-95faca4d.pth
+    filename = url.split("/")[-1]
+
+    # Точное совпадение имени файла
+    exact = bundled_dir / filename
+    if exact.is_file():
+        return exact
+
+    # Частичное совпадение по префиксу до первого дефиса.
+    # Защита от расхождения хеш-суффикса между версиями torchvision:
+    # "wide_resnet50_2-95faca4d.pth" и "wide_resnet50_2-abcdef12.pth"
+    # оба начинаются с "wide_resnet50_2".
+    stem = filename.split("-")[0]
+    candidates = sorted(bundled_dir.glob(f"{stem}*.pth"))
+    if candidates:
+        return candidates[0]
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Основная функция создания backbone
+# ---------------------------------------------------------------------------
+def _build_backbone(backbone_name: str) -> nn.Module:
+    """
+    Создаёт backbone и загружает веса.
+
+    Три сценария работы:
+
+      ┌──────────────────────────┬───────────────────────────┬──────────────────┐
+      │ Среда                    │ Источник весов            │ Нужен интернет?  │
+      ├──────────────────────────┼───────────────────────────┼──────────────────┤
+      │ Скомпилированный .exe    │ sys._MEIPASS/             │ Нет              │
+      │ (PyInstaller)            │ bundled_weights/          │                  │
+      ├──────────────────────────┼───────────────────────────┼──────────────────┤
+      │ IDE / исходники,         │ repo_root/                │ Нет              │
+      │ после download_weights   │ bundled_weights/          │                  │
+      ├──────────────────────────┼───────────────────────────┼──────────────────┤
+      │ IDE / исходники,         │ ~/.cache/torch/           │ Только при       │
+      │ без download_weights     │ (torchvision кеш)         │ первом запуске   │
+      └──────────────────────────┴───────────────────────────┴──────────────────┘
+
+    Args:
+        backbone_name: Имя модели из torchvision.models (например 'wide_resnet50_2').
+
+    Returns:
+        Инициализированный nn.Module с загруженными весами ImageNet.
+
+    Raises:
+        ValueError:   Если backbone_name не найден в torchvision.models.
+        RuntimeError: Если код выполняется внутри .exe но bundled_weights/ не найдена
+                      (означает что сборка выполнена без --add-data bundled_weights).
+    """
+    backbone_factory = tv_models.__dict__.get(backbone_name)
+    if backbone_factory is None:
+        raise ValueError(f"Неизвестный backbone: {backbone_name}")
+
+    weights_enum = _get_default_weights_enum(backbone_name)
+    bundled_dir  = _get_bundled_weights_dir()
+    in_exe       = _is_pyinstaller_bundle()
+
+    # ------------------------------------------------------------------
+    # Сценарий 1 и 2: локальный файл в bundled_weights/
+    # ------------------------------------------------------------------
+    if bundled_dir is not None and weights_enum is not None:
+        weight_file = _find_weight_file(bundled_dir, weights_enum)
+        if weight_file is not None:
+            print(
+                f"[FeatureExtractor] Загрузка весов из bundled_weights/: "
+                f"{weight_file.name}"
+            )
+            # weights=None — не делаем лишней попытки онлайн-загрузки
+            model: nn.Module = backbone_factory(weights=None)
+            state_dict = torch.load(
+                weight_file, map_location="cpu", weights_only=True
+            )
+            model.load_state_dict(state_dict)
+            return model
+
+        # bundled_weights/ существует, но файл для этого backbone-а не найден
+        print(
+            f"[FeatureExtractor] bundled_weights/ найдена, но файл весов "
+            f"для '{backbone_name}' отсутствует."
+        )
+
+    # ------------------------------------------------------------------
+    # FIX: внутри скомпилированного .exe онлайн-загрузка невозможна.
+    # Если дошли сюда — значит bundled_weights/ либо отсутствует, либо
+    # не содержит нужного файла. Обе ситуации — ошибка сборки.
+    # ------------------------------------------------------------------
+    if in_exe:
+        raise RuntimeError(
+            f"Не удалось найти веса backbone '{backbone_name}' в bundled_weights/.\n"
+            f"Это означает ошибку сборки: папка bundled_weights/ не была упакована "
+            f"в дистрибутив или не содержит нужного .pth файла.\n"
+            f"Убедитесь что в PyInstaller передан флаг: "
+            f"--add-data 'bundled_weights;bundled_weights'\n"
+            f"и что перед сборкой был запущен скрипт: python scripts/download_weights.py"
+        )
+
+    # ------------------------------------------------------------------
+    # Сценарий 3: IDE / исходники без bundled_weights/.
+    # weights="DEFAULT" использует ~/.cache/torch/hub/checkpoints/:
+    #   - файл уже есть в кеше → загружает без сети
+    #   - файла нет → скачивает автоматически (~100–300 МБ)
+    # ------------------------------------------------------------------
+    print(
+        f"[FeatureExtractor] Загрузка весов через torchvision "
+        f"(кеш: ~/.cache/torch/hub/checkpoints/)…"
+    )
+    model = backbone_factory(weights="DEFAULT")
+    return model
+
+
+# ---------------------------------------------------------------------------
+# Вспомогательные модули
+# ---------------------------------------------------------------------------
 
 class _LocalAggregation(nn.Module):
     """
@@ -202,9 +270,9 @@ class _LocalAggregation(nn.Module):
          каждая позиция (h, w) получает окрестность p×p соседних векторов.
          Результат: (B, C, H_out, W_out, p, p)
       2. Reshape объединяет пространственные оси: (B*H_out*W_out, C, p, p)
-      3. AdaptiveAvgPool2d(1) усредняет p×p - одно значение на канал.
+      3. AdaptiveAvgPool2d(1) усредняет p×p → одно значение на канал.
          Это и есть f_agg = среднее по окрестности.
-      4. Reshape обратно: (B, H_out, W_out, C) - (B, C, H_out, W_out)
+      4. Reshape обратно: (B, H_out, W_out, C) → (B, C, H_out, W_out)
 
     Args:
         patch_size: Размер окрестности p (нечётное число для симметрии).
@@ -215,7 +283,6 @@ class _LocalAggregation(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.stride = stride
-        # padding = p//2 гарантирует, что выходное разрешение совпадает со входным при stride=1
         self.padding = patch_size // 2
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -224,8 +291,7 @@ class _LocalAggregation(nn.Module):
             x: Карта признаков формы (B, C, H, W).
 
         Returns:
-            Локально агрегированная карта формы (B, C, H_out, W_out),
-            где H_out = (H + 2*padding - patch_size) // stride + 1.
+            Локально агрегированная карта формы (B, C, H_out, W_out).
             При stride=1 и padding=p//2: H_out == H (разрешение сохраняется).
         """
         B, C, H, W = x.shape
@@ -233,29 +299,28 @@ class _LocalAggregation(nn.Module):
         s = self.stride
         pad = self.padding
 
-        # Шаг 1: padding - unfold по высоте и ширине
         x_padded = F.pad(x, (pad, pad, pad, pad), mode="constant", value=0)
-
-        # unfold(dimension, size, step):
-        #   по высоте: (B, C, H+2p, W+2p) - (B, C, H_out, W+2p, p)
-        #   по ширине: - (B, C, H_out, W_out, p, p)
         x_unf = x_padded.unfold(2, p, s).unfold(3, p, s)
+        # x_unf: (B, C, H_out, W_out, p, p)
 
         H_out, W_out = x_unf.shape[2], x_unf.shape[3]
 
-        # Шаг 2: reshape - (B*H_out*W_out, C, p, p)
         x_patches = x_unf.permute(0, 2, 3, 1, 4, 5).contiguous()
         x_patches = x_patches.view(B * H_out * W_out, C, p, p)
 
-        # Шаг 3: AdaptiveAvgPool2d(1) — f_agg, усредняет окрестность p×p
         x_agg = F.adaptive_avg_pool2d(x_patches, output_size=1)
+        # x_agg: (B*H_out*W_out, C, 1, 1)
 
-        # Шаг 4: убираем лишние оси и восстанавливаем пространственную форму
         x_agg = x_agg.view(B, H_out, W_out, C)
         x_agg = x_agg.permute(0, 3, 1, 2).contiguous()
+        # x_agg: (B, C, H_out, W_out)
 
         return x_agg
 
+
+# ---------------------------------------------------------------------------
+# Основной класс
+# ---------------------------------------------------------------------------
 
 class FeatureExtractor(nn.Module):
     """
@@ -268,22 +333,24 @@ class FeatureExtractor(nn.Module):
       layer2_features (B, 512, 28, 28)   ← j=2, высокое разрешение
       layer3_features (B, 1024, 14, 14)  ← j=3, широкий контекст
             локальная агрегация _LocalAggregation (p=3, s=1)
-      layer2_agg (B, 512, 28, 28)        ← разрешение сохранено
-      layer3_agg (B, 1024, 14, 14)       ← разрешение сохранено
-            билинейная интерполяция layer3 - размер layer2
+      layer2_agg (B, 512, 28, 28)
+      layer3_agg (B, 1024, 14, 14)
+            билинейная интерполяция layer3 → размер layer2
       layer3_upsampled (B, 1024, 28, 28)
             конкатенация по каналам
       combined (B, 1536, 28, 28)
-            AdaptiveAvgPool2d - target_dim каналов
+            AdaptiveAvgPool1d → target_dim каналов
       adapted (B, 1024, 28, 28)
             reshape: патчи в строки матрицы
-      patch_features (B*784, 1024)        ← готово для CoresetSampler
+      patch_features (B*784, 1024)
 
     Args:
-        target_dim:  Размерность финального патч-вектора (default: 1024).
-        patch_size:  Размер окрестности для локальной агрегации (default: 3).
-        stride:      Шаг обхода карты признаков (default: 1).
-        device:      Устройство для backbone ('cpu' или 'cuda').
+        target_dim:    Размерность финального патч-вектора (default: 1024).
+        patch_size:    Размер окрестности для локальной агрегации (default: 3).
+        stride:        Шаг обхода карты признаков (default: 1).
+        backbone_name: Имя backbone из torchvision.models (default: wide_resnet50_2).
+        layers:        Слои для извлечения признаков (default: layer2, layer3).
+        device:        Устройство для backbone ('cpu' или 'cuda').
     """
 
     def __init__(
@@ -305,7 +372,8 @@ class FeatureExtractor(nn.Module):
             raise ValueError("layers не может быть пустым. Укажите минимум один слой.")
 
         # -- Backbone ----------------------------------------------------------
-        # Offline-first загрузка: сначала из bundled_weights/, потом из интернета
+        # Offline-first: bundled_weights/ → torchvision кеш → онлайн-загрузка.
+        # В скомпилированном .exe третий вариант запрещён (RuntimeError).
         self.backbone = _build_backbone(self.backbone_name)
         self.backbone.eval()
         for param in self.backbone.parameters():
@@ -319,17 +387,17 @@ class FeatureExtractor(nn.Module):
         self._channel_adapter = nn.AdaptiveAvgPool1d(target_dim)
 
         # -- Forward-хуки -----------------------------------------------------
+        # Словарь для хранения выходов промежуточных слоёв.
+        # Заполняется при каждом forward-проходе backbone.
         self._feature_cache: dict[str, torch.Tensor] = {}
         self._hook_handles: list[torch.utils.hooks.RemovableHook] = []
         self._register_hooks()
 
     def _register_hooks(self) -> None:
         """
-        Регистрирует forward-хуки на layer2 и layer3 backbone.
+        Регистрирует forward-хуки на указанные слои backbone.
 
-        Хук — это функция, автоматически вызываемая PyTorch после того,
-        как слой завершает forward-pass. Хук получает (module, input, output)
-        и сохраняет output в _feature_cache.
+        Хук сохраняет output слоя в _feature_cache при каждом forward-проходе.
         """
         for layer_name in self.layers:
             named_children = dict(self.backbone.named_children())
@@ -373,9 +441,7 @@ class FeatureExtractor(nn.Module):
             self.remove_hooks()
 
     def _run_backbone(self, images: torch.Tensor) -> None:
-        """
-        Прогоняет изображения через backbone, заполняя _feature_cache.
-        """
+        """Прогоняет изображения через backbone, заполняя _feature_cache."""
         self._feature_cache.clear()
         with torch.no_grad():
             self.backbone(images)
@@ -404,6 +470,14 @@ class FeatureExtractor(nn.Module):
     def _adapt_channels(self, feat: torch.Tensor) -> torch.Tensor:
         """
         Сжимает число каналов с 1536 до target_dim=1024 через AdaptiveAvgPool1d.
+
+        Трансформации формы по шагам (пример: B=32, H=W=28):
+            Вход:                    (32, 1536, 28, 28)
+            permute(0,2,3,1):        (32,  28,  28, 1536)
+            reshape(B*H*W, 1, C):    (25088, 1, 1536)
+            AdaptiveAvgPool1d(1024): (25088, 1, 1024)
+            reshape(B, H, W, 1024):  (32,  28,  28, 1024)
+            permute(0,3,1,2):        (32, 1024, 28, 28)
         """
         B, C, H, W = feat.shape
         feat_2d = feat.permute(0, 2, 3, 1).contiguous().reshape(B * H * W, 1, C)
@@ -415,7 +489,7 @@ class FeatureExtractor(nn.Module):
     def _to_patch_matrix(self, feat: torch.Tensor) -> torch.Tensor:
         """
         Разворачивает пространственную карту признаков в матрицу патчей.
-        (B, C, H, W) - (B*H*W, C)
+        (B, C, H, W) → (B*H*W, C)
         """
         B, C, H, W = feat.shape
         return feat.permute(0, 2, 3, 1).reshape(B * H * W, C)
@@ -429,9 +503,11 @@ class FeatureExtractor(nn.Module):
 
         Args:
             images: Батч нормализованных изображений (B, 3, 224, 224).
+                    Должны быть предобработаны build_train_transform() из dataset.py.
 
         Returns:
             Матрица патч-признаков формы (B * H_out * W_out, target_dim).
+            Для входа 224×224: H_out = W_out = 28, итого B*784 строк.
 
         Raises:
             RuntimeError: Если хуки не зарегистрированы (после remove_hooks()).
@@ -476,7 +552,7 @@ class FeatureExtractor(nn.Module):
 
         Returns:
             patch_features: (B * H_out * W_out, target_dim)
-            spatial_size:   (H_out, W_out)
+            spatial_size:   (H_out, W_out) — размер карты признаков
         """
         images = images.to(self.device)
         self._run_backbone(images)
