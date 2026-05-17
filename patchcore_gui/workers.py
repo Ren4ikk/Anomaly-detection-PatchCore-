@@ -28,6 +28,41 @@ def normalize_score(raw_score: float, score_min: float, score_max: float) -> flo
     return float(np.clip((raw_score - score_min) / denom, 0.0, 1.0))
 
 
+class MetaLoadWorker(QThread):
+    """
+    Асинхронно читает метаданные из .pt файла банка памяти (score_min, score_max, threshold)
+    БЕЗ создания FeatureExtractor и загрузки весов backbone.
+
+    Используется в _choose_model и _try_restore_model_metadata вместо синхронного
+    torch.load в главном потоке, что устраняет фриз GUI при чтении крупных файлов.
+
+    Signals:
+        meta_ready(score_min, score_max, threshold_raw):
+            Метаданные успешно прочитаны.
+        meta_failed(message):
+            Произошла ошибка чтения файла.
+    """
+
+    meta_ready = pyqtSignal(float, float, float, dict)  # score_min, score_max, threshold_raw, state_dict
+    meta_failed = pyqtSignal(str)
+
+    def __init__(self, model_path: str, parent: Optional[QObject] = None) -> None:
+        super().__init__(parent)
+        self._model_path = model_path
+
+    def run(self) -> None:
+        try:
+            state = torch.load(self._model_path, map_location="cpu", weights_only=True)
+            if not isinstance(state, dict):
+                raise ValueError("Ожидался словарь состояния PatchCore.")
+            score_min = float(state.get("score_min", 0.0))
+            score_max = float(state.get("score_max", 1.0))
+            threshold = float(state.get("threshold", 0.5))
+            self.meta_ready.emit(score_min, score_max, threshold, state)
+        except Exception as exc:  # noqa: BLE001
+            self.meta_failed.emit(str(exc))
+
+
 class ModelLoadWorker(QThread):
     """
     Однократная загрузка чекпоинта в объекте PatchCore (в отдельном потоке).
@@ -71,6 +106,12 @@ class InferenceWorker(QThread):
 
     В главный поток уходят сырое значение скора, нормализованный скор [0,1],
     карта аномалий и время; ошибки — отдельным сигналом.
+
+    Жизненный цикл:
+      1. start()        — поток запускается, загружает backbone + корсет
+      2. model_ready    — сигнал: метаданные готовы, можно ставить задачи
+      3. enqueue_path() — добавить путь в очередь на обработку
+      4. request_stop() — вставить sentinel None, поток завершится чисто
     """
 
     model_ready = pyqtSignal(float, float, float)  # score_min, score_max, threshold_raw
@@ -83,13 +124,16 @@ class InferenceWorker(QThread):
         self._model_path = model_path
         self._device = device
         self._tasks: queue.Queue[Optional[str]] = queue.Queue()
+        # Флаг: backbone + корсет уже загружены и готовы к инференсу.
+        # Устанавливается из главного потока в _on_model_ready.
+        self.is_model_loaded: bool = False
 
     def enqueue_path(self, image_path: str) -> None:
         """Поставить изображение в очередь на обработку."""
         self._tasks.put(image_path)
 
     def request_stop(self) -> None:
-        """Сигнал остановки: после завершения текущей задачи поток завершится."""
+        """Сигнал остановки: sentinel None завершает цикл обработки."""
         self._tasks.put(None)
 
     def run(self) -> None:

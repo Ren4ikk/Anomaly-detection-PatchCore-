@@ -40,9 +40,35 @@ jobs:
           poetry run pip install -r requirements.txt
           poetry run pip install pyinstaller
 
+      # -------------------------------------------------------------------
+      # Скачиваем веса ВСЕХ backbone-ов, которые могут использоваться
+      # в приложении, пока есть интернет (во время сборки на CI).
+      # Скрипт сохраняет файлы в ./bundled_weights/ и печатает имена файлов
+      # чтобы убедиться что всё скачалось корректно.
+      # -------------------------------------------------------------------
+      - name: Download backbone weights for offline bundling
+        run: |
+          poetry run python scripts/download_weights.py
+
+      - name: Verify weights directory
+        run: |
+          echo "=== Bundled weights ==="
+          ls -lh bundled_weights/
+          echo "======================"
+
+      # -------------------------------------------------------------------
+      # Сборка EXE.
+      # --add-data "bundled_weights;bundled_weights" упаковывает папку с
+      # весами внутрь дистрибутива. Разделитель ";" — Windows-синтаксис
+      # PyInstaller (src;dest_inside_bundle).
+      # -------------------------------------------------------------------
       - name: Build EXE with PyInstaller
         run: |
-          poetry run pyinstaller --windowed --name="PatchCore_App_${{ inputs.version_tag }}" main.py
+          poetry run pyinstaller \
+            --windowed \
+            --name="PatchCore_App_${{ inputs.version_tag }}" \
+            --add-data "bundled_weights;bundled_weights" \
+            main.py
 
       - name: Upload EXE artifact
         uses: actions/upload-artifact@v4

@@ -52,7 +52,7 @@ from patchcore_gui.utils import (
 )
 from patchcore_gui.history_types import InferenceHistoryEntry
 from patchcore_gui.settings_dialog import SettingsDialog, TrainingSettings
-from patchcore_gui.workers import InferenceWorker, TrainingWorker, select_device
+from patchcore_gui.workers import InferenceWorker, MetaLoadWorker, TrainingWorker, select_device
 
 try:
     import matplotlib
@@ -437,6 +437,7 @@ class MainWindow(QMainWindow):
         self._worker: Optional[InferenceWorker] = None
         self._preload_worker: Optional[InferenceWorker] = None
         self._preload_model_path: str = ""
+        self._meta_loader: Optional[MetaLoadWorker] = None   # FIX: асинхронная загрузка метаданных
         self._training_worker: Optional[TrainingWorker] = None
         self._training_progress: Optional[QDialog] = None
         self._training_busy: bool = False
@@ -817,7 +818,6 @@ class MainWindow(QMainWindow):
         span = self._score_max - self._score_min
         if span > 0:
             magnitude = span / 1000.0
-            # Округляем шаг до 1, 2 или 5 × 10^n
             import math
             exp = math.floor(math.log10(magnitude)) if magnitude > 0 else -4
             step = 10 ** exp
@@ -1155,30 +1155,76 @@ class MainWindow(QMainWindow):
     def _on_training_worker_finished(self) -> None:
         self._training_worker = None
 
+    # -------------------------------------------------------------------------
+    # FIX: Асинхронная загрузка метаданных банка памяти
+    # -------------------------------------------------------------------------
+
     def _choose_model(self) -> None:
+        """
+        FIX: torch.load вынесен в MetaLoadWorker — главный поток не блокируется.
+        Кнопки остаются активными пока идёт чтение файла.
+        """
         path, _ = QFileDialog.getOpenFileName(self, "Выбор файла банка памяти", "", "PyTorch (*.pt)")
         if not path:
             return
-        try:
-            state = torch.load(path, map_location="cpu", weights_only=True)
-            if not isinstance(state, dict):
-                raise ValueError("Ожидался словарь состояния PatchCore.")
-            self._score_min = float(state.get("score_min", 0.0))
-            self._score_max = float(state.get("score_max", 1.0))
-            self._model_auto_threshold_raw = float(state.get("threshold", 0.5))
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(
-                self,
-                "Файл банка памяти",
-                f"Не удалось прочитать метаданные:\n{path}\n\n{exc}",
-            )
-            return
+
+        # Отменяем предыдущую загрузку метаданных если она ещё идёт
+        self._cancel_meta_loader()
+
+        # Временно отключаем кнопку выбора банка чтобы не запустить два загрузчика
+        self._btn_choose_model.setEnabled(False)
+        self._btn_model_info.setEnabled(False)
+        self._model_label.setText(f"Эталонный банк памяти: загрузка…\n{path}")
+
+        self._meta_loader = MetaLoadWorker(path)
+        # Передаём path через замыкание чтобы слот знал, к какому файлу относятся данные
+        self._meta_loader.meta_ready.connect(
+            lambda smin, smax, thr, state, p=path: self._on_meta_ready(p, smin, smax, thr, state)
+        )
+        self._meta_loader.meta_failed.connect(
+            lambda msg, p=path: self._on_meta_failed(p, msg)
+        )
+        self._meta_loader.finished.connect(self._on_meta_loader_finished)
+        self._meta_loader.start()
+
+    def _on_meta_ready(
+        self,
+        path: str,
+        score_min: float,
+        score_max: float,
+        threshold_raw: float,
+        state: dict,
+    ) -> None:
+        """Вызывается из главного потока через сигнал после успешного чтения метаданных."""
         self._model_path = path
         self._model_state = state
+        self._score_min = score_min
+        self._score_max = score_max
+        self._model_auto_threshold_raw = threshold_raw
         self._model_label.setText(f"Эталонный банк памяти:\n{path}")
         self._btn_model_info.setEnabled(True)
         self._sync_threshold_ui_from_metadata()
         self._start_preload_worker(path)
+
+    def _on_meta_failed(self, path: str, message: str) -> None:
+        """Вызывается из главного потока через сигнал при ошибке чтения метаданных."""
+        self._model_label.setText("Эталонный банк памяти: не выбран")
+        QMessageBox.critical(
+            self,
+            "Файл банка памяти",
+            f"Не удалось прочитать метаданные:\n{path}\n\n{message}",
+        )
+
+    def _on_meta_loader_finished(self) -> None:
+        """Восстанавливаем кнопку «Обзор» после завершения загрузки метаданных."""
+        self._btn_choose_model.setEnabled(True)
+        self._meta_loader = None
+
+    def _cancel_meta_loader(self) -> None:
+        """Останавливает текущий MetaLoadWorker если он ещё работает."""
+        if self._meta_loader is not None and self._meta_loader.isRunning():
+            self._meta_loader.wait(2_000)
+        self._meta_loader = None
 
     def _show_model_info(self) -> None:
         if self._model_state is None:
@@ -1192,7 +1238,12 @@ class MainWindow(QMainWindow):
             self._image_dir = path
             self._folder_label.setText(f"Папка:\n{path}")
 
+    # -------------------------------------------------------------------------
+    # FIX: Конвейер — исправленные СТАРТ / СТОП
+    # -------------------------------------------------------------------------
+
     def _start_conveyor(self) -> None:
+        # FIX: защита от двойного нажатия
         if self._running:
             return
         if self._training_busy:
@@ -1219,30 +1270,32 @@ class MainWindow(QMainWindow):
         self._current_history_idx = -1
         self._apply_history_index()
 
+        # FIX: сначала выставляем флаг и состояние кнопок
         self._running = True
         self._btn_start.setEnabled(False)
         self._btn_stop.setEnabled(True)
 
         device = select_device(self._device_pref)
+
+        # Используем предзагрузочный воркер если он загрузил тот же файл
         if (
             self._preload_worker is not None
             and self._preload_worker.isRunning()
             and self._preload_model_path == self._model_path
         ):
-            # Берём предзагрузочный воркер — банк уже загружается или загружен
             self._worker = self._preload_worker
             self._preload_worker = None
             self._preload_model_path = ""
+            # FIX: подключаем сигналы только сейчас, model_ready мог уже сработать
             self._worker.inference_done.connect(self._on_inference_done)
             self._worker.inference_failed.connect(self._on_inference_failed)
             self._worker.finished.connect(self._on_worker_finished)
             if self._worker.is_model_loaded:
-                # Банк уже готов — немедленно стартуем конвейер
+                # Банк уже готов — немедленно запускаем
                 self._on_timer_tick()
                 self._timer.start()
             # Иначе _on_model_ready придёт чуть позже и запустит таймер
         else:
-            # Предзагрузка недоступна — создаём воркер как обычно
             self._discard_preload_worker()
             self._worker = InferenceWorker(self._model_path, device)
             self._worker.is_model_loaded = False
@@ -1259,6 +1312,7 @@ class MainWindow(QMainWindow):
         device = select_device(self._device_pref)
         w = InferenceWorker(model_path, device)
         w.is_model_loaded = False
+        # FIX: model_ready от preload-воркера обновляет метаданные в UI
         w.model_ready.connect(self._on_model_ready)
         self._preload_worker = w
         self._preload_model_path = model_path
@@ -1266,23 +1320,39 @@ class MainWindow(QMainWindow):
         print(f"[Preload] Фоновая загрузка банка памяти: {model_path}")
 
     def _discard_preload_worker(self) -> None:
-        """Останавливает и удаляет предзагрузочный воркер."""
+        """
+        Останавливает и удаляет предзагрузочный воркер.
+
+        FIX: используем request_stop() вместо блокирующего wait() чтобы
+        не фризить GUI. Воркер завершится самостоятельно через sentinel None.
+        """
         if self._preload_worker is not None:
             self._preload_worker.request_stop()
-            self._preload_worker.wait(5_000)
+            # Не ждём здесь — позволяем потоку завершиться самостоятельно.
+            # Qt удалит объект QThread когда он отправит сигнал finished.
             self._preload_worker = None
             self._preload_model_path = ""
 
     def _stop_conveyor(self) -> None:
+        """
+        FIX: не блокируем GUI через worker.wait().
+        Таймер останавливаем немедленно; воркер завершится сам через sentinel.
+        """
         self._timer.stop()
         self._running = False
         self._btn_start.setEnabled(True)
         self._btn_stop.setEnabled(False)
         if self._worker is not None:
             self._worker.request_stop()
-            self._worker.wait(10_000)
+            # FIX: убрали worker.wait(10_000) — это блокировало GUI на 10 секунд.
+            # Воркер получит sentinel None из очереди и завершится самостоятельно.
+            # _on_worker_finished обнулит self._worker когда поток закончится.
 
     def _on_worker_finished(self) -> None:
+        """
+        FIX: обнуляем _worker только здесь, а не в _stop_conveyor.
+        Это устраняет потенциальный AttributeError в _on_timer_tick.
+        """
         self._worker = None
 
     def _on_model_ready(self, score_min: float, score_max: float, threshold_raw: float) -> None:
@@ -1290,21 +1360,26 @@ class MainWindow(QMainWindow):
         self._score_max = float(score_max)
         self._model_auto_threshold_raw = float(threshold_raw)
         self._sync_threshold_ui_from_metadata()
-        # Если конвейер уже запущен и ждёт загрузки — стартуем таймер.
-        # Если это предзагрузка в фоне — ничего не делаем, запомнит is_model_loaded.
-        if self._running and self._worker is not None:
+
+        sender = self.sender()
+
+        if self._running and self._worker is not None and sender is self._worker:
+            # Конвейер уже запущен и именно этот воркер загрузился — стартуем таймер
             self._worker.is_model_loaded = True
             self._on_timer_tick()
             self._timer.start()
-        elif self._preload_worker is not None:
+        elif self._preload_worker is not None and sender is self._preload_worker:
+            # Это предзагрузка в фоне — просто помечаем готовность
             self._preload_worker.is_model_loaded = True
 
     def _on_timer_tick(self) -> None:
+        # FIX: проверяем _worker на None перед использованием
         if not self._running or self._worker is None:
+            self._timer.stop()
             return
         if self._conveyor_index >= len(self._image_paths):
+            # Все задания выданы — останавливаем таймер, ждём обработки последних
             self._timer.stop()
-            self._try_finalize_conveyor()
             return
         path = self._image_paths[self._conveyor_index]
         self._conveyor_index += 1
@@ -1337,14 +1412,24 @@ class MainWindow(QMainWindow):
         self._append_log_row(short_name, raw_score, status)
 
         self._processed_count += 1
+        # FIX: финализация только когда все задания выданы И все обработаны
         self._try_finalize_conveyor()
 
     def _try_finalize_conveyor(self) -> None:
-        """Завершает сессию, когда все кадры выданы в очередь и обработаны воркером."""
-        if not self._running or not self._image_paths:
+        """
+        Завершает сессию когда все кадры выданы в очередь И все обработаны воркером.
+
+        FIX: добавлена проверка _running чтобы не вызывать _stop_conveyor дважды
+        (например, если пользователь уже нажал СТОП вручную).
+        """
+        if not self._running:
             return
+        if not self._image_paths:
+            return
+        # Ещё не все задания отправлены в очередь
         if self._conveyor_index < len(self._image_paths):
             return
+        # Ещё не все результаты получены
         if self._processed_count < len(self._image_paths):
             return
         self._stop_conveyor()
@@ -1390,8 +1475,6 @@ class MainWindow(QMainWindow):
         m = self._last_map
         if rgb is None or m is None:
             return numpy_rgb_to_qpixmap(np.zeros((224, 224, 3), dtype=np.uint8))
-        # Для визуализации не даём диапазону схлопнуться ниже порога:
-        # иначе даже "нормальные" кадры быстро насыщаются в красный.
         vis_max = max(float(self._score_max), float(self._model_auto_threshold_raw))
         heat_bgr = anomaly_map_to_bgr_heatmap(m, self._score_min, vis_max)
         if mode == ViewMode.ORIGINAL:
@@ -1429,6 +1512,7 @@ class MainWindow(QMainWindow):
         if self._running:
             self._stop_conveyor()
         self._discard_preload_worker()
+        self._cancel_meta_loader()
         self._save_ui_state()
         super().closeEvent(event)
 
@@ -1452,20 +1536,17 @@ class MainWindow(QMainWindow):
         """Загружает состояние интерфейса при старте программы."""
         settings = QSettings("VKR", "PatchCoreApp")
 
-        # 1. Восстанавливаем размер окна (если окно ранее было закрыто)
         geom = settings.value("geometry")
         if geom is not None:
             self.restoreGeometry(geom)
         else:
             self.showMaximized()
 
-        # 2. Выпадающие списки и переключатели
         self._role_combo.setCurrentIndex(settings.value("role_index", 0, type=int))
         self._mode_combo.setCurrentIndex(settings.value("mode_index", 0, type=int))
         self._threshold_auto_check.setChecked(settings.value("threshold_auto", True, type=bool))
         self._threshold_spinbox.setValue(settings.value("threshold_manual", 0.5, type=float))
 
-        # 3. Восстанавливаем обычные пути к папкам и обновляем их ярлыки (Label)
         self._image_dir = settings.value("image_dir", "", type=str)
         if self._image_dir:
             self._folder_label.setText(f"Папка:\n{self._image_dir}")
@@ -1478,27 +1559,59 @@ class MainWindow(QMainWindow):
         if self._train_save_path:
             self._train_save_label.setText(f"Файл банка:\n{self._train_save_path}")
 
-        # 4. Восстанавливаем банк памяти только если файл всё ещё существует на диске
+        # FIX: восстанавливаем метаданные банка асинхронно через MetaLoadWorker
         saved_model = settings.value("model_path", "", type=str)
         if saved_model and Path(saved_model).is_file():
             self._model_path = saved_model
-            self._model_label.setText(f"Эталонный банк памяти:\n{self._model_path}")
-            self._try_restore_model_metadata(self._model_path)
+            self._model_label.setText(f"Эталонный банк памяти: загрузка…\n{saved_model}")
+            self._try_restore_model_metadata_async(saved_model)
 
-    def _try_restore_model_metadata(self, path: str) -> None:
-        """Тихо подгружает метаданные из сохранённого файла без блокировки."""
-        try:
-            state = torch.load(path, map_location="cpu", weights_only=True)
-            if isinstance(state, dict):
-                self._model_state = state
-                self._score_min = float(state.get("score_min", 0.0))
-                self._score_max = float(state.get("score_max", 1.0))
-                self._model_auto_threshold_raw = float(state.get("threshold", 0.5))
-                self._btn_model_info.setEnabled(True)
-                self._sync_threshold_ui_from_metadata()
-                self._start_preload_worker(path)
-        except Exception as e:
-            print(f"[UI State] Не удалось восстановить метаданные банка памяти: {e}")
+    def _try_restore_model_metadata_async(self, path: str) -> None:
+        """
+        FIX: асинхронно восстанавливает метаданные без блокировки GUI.
+        Заменяет старый синхронный _try_restore_model_metadata.
+        """
+        self._btn_choose_model.setEnabled(False)
+
+        loader = MetaLoadWorker(path)
+        loader.meta_ready.connect(
+            lambda smin, smax, thr, state, p=path: self._on_restore_meta_ready(p, smin, smax, thr, state)
+        )
+        loader.meta_failed.connect(
+            lambda msg, p=path: self._on_restore_meta_failed(p, msg)
+        )
+        loader.finished.connect(self._on_restore_meta_finished)
+        self._meta_loader = loader
+        loader.start()
+
+    def _on_restore_meta_ready(
+        self,
+        path: str,
+        score_min: float,
+        score_max: float,
+        threshold_raw: float,
+        state: dict,
+    ) -> None:
+        """Восстановление метаданных при старте — успех."""
+        self._model_state = state
+        self._score_min = score_min
+        self._score_max = score_max
+        self._model_auto_threshold_raw = threshold_raw
+        self._model_label.setText(f"Эталонный банк памяти:\n{path}")
+        self._btn_model_info.setEnabled(True)
+        self._sync_threshold_ui_from_metadata()
+        self._start_preload_worker(path)
+
+    def _on_restore_meta_failed(self, path: str, msg: str) -> None:
+        """Восстановление метаданных при старте — ошибка (тихо, без диалога)."""
+        self._model_path = ""
+        self._model_label.setText("Эталонный банк памяти: не выбран")
+        print(f"[UI State] Не удалось восстановить метаданные банка памяти: {msg}")
+
+    def _on_restore_meta_finished(self) -> None:
+        """Разблокируем кнопку после завершения фонового восстановления."""
+        self._btn_choose_model.setEnabled(True)
+        self._meta_loader = None
 
     def _export_to_excel(self) -> None:
         """Собирает параметры банка памяти, результаты инференса и метрики качества в Excel."""
@@ -1536,8 +1649,6 @@ class MainWindow(QMainWindow):
             }
             if self._model_state:
                 for k, v in self._model_state.items():
-                    # Исключаем словарь метрик (он пойдет на отдельный лист)
-                    # и сложные объекты, оставляя только базовые параметры
                     if k != "metrics" and isinstance(v, (int, float, str, tuple, list)):
                         model_info["Параметр"].append(k)
                         model_info["Значение"].append(str(v))
@@ -1547,20 +1658,16 @@ class MainWindow(QMainWindow):
             metrics_data = {"Показатель": [], "Значение": []}
             if self._model_state and "metrics" in self._model_state:
                 m = self._model_state["metrics"]
-
-                # Собираем только скалярные значения (основные метрики)
                 mapping = {
                     "image_auroc": "Image AUROC (Global)",
                     "pixel_auroc": "Pixel AUROC (Localization)",
                     "pro_score": "PRO Score",
                 }
-
                 for key, label in mapping.items():
                     if key in m:
                         metrics_data["Показатель"].append(label)
                         metrics_data["Значение"].append(round(float(m[key]), 4))
 
-            # Если метрик нет (банк не валидировался), добавим пояснение
             if not metrics_data["Показатель"]:
                 metrics_data["Показатель"].append("Статус")
                 metrics_data["Значение"].append("Метрики не рассчитывались")
