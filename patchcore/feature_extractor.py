@@ -235,7 +235,7 @@ def _build_backbone(backbone_name: str) -> nn.Module:
     # ------------------------------------------------------------------
     if in_exe:
         raise RuntimeError(
-            f"Не удалось найти веса backbone '{backbone_name}' в bundled_weights/.\n"
+            f"Не удалось найти веса базовой сети '{backbone_name}' в bundled_weights/.\n"
             f"Это означает ошибку сборки: папка bundled_weights/ не была упакована "
             f"в дистрибутив или не содержит нужного .pth файла.\n"
             f"Убедитесь что в PyInstaller передан флаг: "

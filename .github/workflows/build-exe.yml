@@ -66,8 +66,10 @@ jobs:
         run: |
           poetry run pyinstaller \
             --windowed \
-            --name="PatchCore_App_${{ inputs.version_tag }}" \
+            --name="PatchCoreApp_${{ inputs.version_tag }}" \
             --add-data "bundled_weights;bundled_weights" \
+            --collect-all sklearn \
+            --collect-all scikit-learn \
             main.py
 
       - name: Upload EXE artifact
