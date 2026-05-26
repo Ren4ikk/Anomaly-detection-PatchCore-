@@ -76,5 +76,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: PatchCore-Executable-${{ inputs.version_tag }}
-          path: dist/PatchCore_App_${{ inputs.version_tag }}
+          path: dist/PatchCoreApp_${{ inputs.version_tag }}
           retention-days: 7
