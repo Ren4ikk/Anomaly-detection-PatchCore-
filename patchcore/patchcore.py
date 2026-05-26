@@ -191,14 +191,14 @@ class PatchCore:
                 self._spatial_size = spatial_size
 
             if (batch_idx + 1) % 10 == 0:
-                print(f"  Обработано батчей: {batch_idx + 1}/{len(loader)}")
+                print(f"  Обработано пакетов: {batch_idx + 1}/{len(loader)}")
 
         # Объединяем все патч-признаки в единую матрицу M
         memory_bank = torch.cat(all_features, dim=0)
         print(f"[PatchCore] Банк памяти M: {memory_bank.shape}")
 
         # Этап 3: сжатие через coreset
-        print(f"[PatchCore] Coreset subsampling (ratio={self.coreset_sampler.ratio})...")
+        print(f"[PatchCore] Сжатие до подмножества (коэффициент={self.coreset_sampler.ratio})...")
         coreset = self.coreset_sampler.sample(memory_bank)
         print(f"[PatchCore] Эталонный банк памяти M_C: {coreset.shape}")
 
@@ -213,7 +213,7 @@ class PatchCore:
         should_stop: "Callable[[], bool] | None" = None,
     ) -> None:
         """
-        Вычисляет глобальный диапазон скоров и порог по эталонным изображениям.
+        Вычисляет глобальный диапазон оценок аномальности и порог по эталонным изображениям.
 
         Прогоняет все нормальные train-изображения через predict() и
         вычисляет три значения:
@@ -233,7 +233,7 @@ class PatchCore:
             should_stop:     Опциональный коллбэк () -> bool. Если возвращает True —
                              выполнение прерывается с поднятием InterruptedError.
         """
-        print("[PatchCore] Вычисление диапазона скоров и порога по эталонным данным...")
+        print("[PatchCore] Вычисление диапазона оценок аномальности и порога по эталонным данным...")
 
         dataset = PatchCoreDataset(root=train_image_dir)
         loader = DataLoader(

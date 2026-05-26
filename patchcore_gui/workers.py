@@ -275,8 +275,8 @@ class TrainingWorker(QThread):
                     self.training_warning.emit(
                         f"Эталонный банк памяти сформирован успешно, однако вычислить "
                         f"метрики качества не удалось:\n\n{msg}\n\n"
-                        f"Проверьте структуру папки Validation (должны быть подпапки "
-                        f"'good' и папки с дефектами) и при необходимости — папку GT-масок."
+                        f"Проверьте структуру папки валидации (должны быть подпапки "
+                        f"'good' и папки с дефектами) и при необходимости — папку эталонных масок."
                     )
 
             model.save(self._save_path)
@@ -294,14 +294,14 @@ class TrainingWorker(QThread):
 
     def _apply_f1_threshold(self, model: PatchCore) -> None:
         if not self._settings.validation_dir:
-            raise ValueError("Не выбрана папка Validation для F1-оптимального порога.")
+            raise ValueError("Не выбрана папка валидации для F1-оптимального порога.")
 
         val_images, val_labels, val_masks = self._load_validation_data(
             self._settings.validation_dir,
             self._settings.gt_mask_dir if self._settings.gt_mask_dir else None,
         )
         if len(val_images) == 0:
-            raise ValueError("Validation папка не содержит изображений.")
+            raise ValueError("Папка валидации не содержит изображений.")
 
         image_scores: list[float] = []
         anomaly_maps: list[np.ndarray] = []
@@ -318,7 +318,7 @@ class TrainingWorker(QThread):
 
         if self._settings.threshold_objective == "pixel_f1":
             if not any(m is not None for m in val_masks):
-                raise ValueError("Для Pixel-level F1 нужны GT-маски в выбранной папке.")
+                raise ValueError("Для F1 уровня пикселей нужны эталонные маски в выбранной папке.")
             gt_masks = []
             pred_maps = []
             for idx, pred in enumerate(anomaly_maps):
@@ -340,7 +340,7 @@ class TrainingWorker(QThread):
     def _compute_metrics(self, model: "PatchCore") -> dict:
         """
         Прогоняет validation-данные через банк памяти и вычисляет метрики.
-        Image AUROC всегда. Pixel AUROC и PRO — только если есть GT-маски.
+        AUROC уровня изображения всегда. AUROC уровня пикселей и метрика PRO — только если есть эталонные маски.
         """
         from patchcore.metrics import Metrics
 
@@ -349,7 +349,7 @@ class TrainingWorker(QThread):
             self._metrics_mask_dir,
         )
         if len(val_images) == 0:
-            raise ValueError("Validation папка для метрик не содержит изображений.")
+            raise ValueError("Папка валидации для метрик не содержит изображений.")
 
         image_scores: list[float] = []
         anomaly_maps_list: list[np.ndarray] = []
@@ -371,9 +371,9 @@ class TrainingWorker(QThread):
 
         if self._metrics_mask_dir and not has_masks:
             raise ValueError(
-                f"Папка GT-масок указана ({self._metrics_mask_dir}), но ни одна маска "
+                f"Папка эталонных масок указана ({self._metrics_mask_dir}), но ни одна маска "
                 f"не найдена. Ожидаемая структура: <папка_масок>/<категория>/<имя_файла>.*  "
-                f"(например: masks/crack/001.png). Pixel AUROC и PRO Score не будут вычислены."
+                f"(например: masks/crack/001.png). AUROC уровня пикселей и метрика PRO не будут вычислены."
             )
 
         if has_masks:
@@ -419,10 +419,10 @@ class TrainingWorker(QThread):
             except Exception as _exc:
                 print(f"[TrainingWorker] PRO curve: {_exc}")
 
-        print(f"[TrainingWorker] Image AUROC: {results.image_auroc:.4f}")
+        print(f"[TrainingWorker] AUROC уровня изображения : {results.image_auroc:.4f}")
         if has_masks:
-            print(f"[TrainingWorker] Pixel AUROC: {results.pixel_auroc:.4f}")
-            print(f"[TrainingWorker] PRO Score  : {results.pro_score:.4f}")
+            print(f"[TrainingWorker] AUROC уровня пикселей   : {results.pixel_auroc:.4f}")
+            print(f"[TrainingWorker] Метрика PRO              : {results.pro_score:.4f}")
 
         return metrics_dict
 
@@ -434,15 +434,15 @@ class TrainingWorker(QThread):
         transform = build_train_transform()
         val_path = Path(validation_dir)
         if not val_path.is_dir():
-            raise ValueError(f"Validation директория не найдена: {validation_dir}")
+            raise ValueError(f"Директория валидации не найдена: {validation_dir}")
 
         category_dirs = sorted([p for p in val_path.iterdir() if p.is_dir()])
         good_dir = val_path / "good"
         if not good_dir.is_dir():
-            raise ValueError("Validation директория должна содержать подпапку 'good'.")
+            raise ValueError("Директория валидации должна содержать подпапку 'good'.")
         if len(category_dirs) < 2:
             raise ValueError(
-                "Validation директория должна содержать 'good' и хотя бы одну папку дефектов."
+                "Директория валидации должна содержать 'good' и хотя бы одну папку дефектов."
             )
 
         image_ext = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
@@ -452,7 +452,7 @@ class TrainingWorker(QThread):
 
         mask_root = Path(gt_mask_dir) if gt_mask_dir else None
         if mask_root is not None and not mask_root.is_dir():
-            raise ValueError(f"Директория GT масок не найдена: {gt_mask_dir}")
+            raise ValueError(f"Директория эталонных масок не найдена: {gt_mask_dir}")
 
         for category_dir in category_dirs:
             category = category_dir.name

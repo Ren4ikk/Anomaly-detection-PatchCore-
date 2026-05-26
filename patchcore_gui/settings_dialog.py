@@ -91,9 +91,9 @@ class SettingsDialog(QDialog):
             "resnext50_32x4d",
             "resnext101_32x8d"
         ])
-        form.addRow("Backbone:", self._backbone_combo)
+        form.addRow("Базовая сеть:", self._backbone_combo)
 
-        layers_group = QGroupBox("Используемые слои (Feature Hierarchy)", page)
+        layers_group = QGroupBox("Используемые слои (иерархия признаков)", page)
         layers_layout = QHBoxLayout(layers_group)
         self._layer_checks: dict[str, QCheckBox] = {}
         for layer_name in ("layer1", "layer2", "layer3", "layer4"):
@@ -107,33 +107,33 @@ class SettingsDialog(QDialog):
         self._coreset_spin.setDecimals(2)
         self._coreset_spin.setSuffix(" %")
         self._coreset_spin.setSingleStep(0.1)
-        form.addRow("Размер сжатия Coreset (%):", self._coreset_spin)
+        form.addRow("Коэффициент сжатия (%):", self._coreset_spin)
 
         self._neighbors_spin = QSpinBox(page)
         self._neighbors_spin.setRange(1, 128)
-        form.addRow("Соседи для Re-weighting (b):", self._neighbors_spin)
+        form.addRow("Соседи для взвешивания оценки (b):", self._neighbors_spin)
 
         self._sigma_spin = QDoubleSpinBox(page)
         self._sigma_spin.setRange(0.1, 20.0)
         self._sigma_spin.setDecimals(2)
         self._sigma_spin.setSingleStep(0.1)
-        form.addRow("Gaussian Blur Sigma:", self._sigma_spin)
+        form.addRow("Сигма гауссова сглаживания:", self._sigma_spin)
 
         self._patch_spin = QSpinBox(page)
         self._patch_spin.setRange(1, 31)
         self._patch_spin.setSingleStep(2)
-        form.addRow("Размер окрестности патча (Patch Size):", self._patch_spin)
+        form.addRow("Размер окрестности:", self._patch_spin)
 
         device_row = QWidget(page)
         device_layout = QHBoxLayout(device_row)
         device_layout.setContentsMargins(0, 0, 0, 0)
         device_layout.setSpacing(10)
-        device_layout.addWidget(QLabel("Устройство (PyTorch):", device_row))
+        device_layout.addWidget(QLabel("Устройство вычислений:", device_row))
         self._device_combo = QComboBox(device_row)
         self._device_combo.addItems(["auto", "cpu", "cuda"])
         self._device_combo.currentIndexChanged.connect(self._on_device_changed)
         device_layout.addWidget(self._device_combo)
-        self._faiss_gpu_check = QCheckBox("Ускорение FAISS (GPU)", device_row)
+        self._faiss_gpu_check = QCheckBox("Ускорение FAISS (графический процессор)", device_row)
         self._faiss_gpu_check.setChecked(False)
         device_layout.addWidget(self._faiss_gpu_check)
         device_layout.addStretch()
@@ -149,7 +149,7 @@ class SettingsDialog(QDialog):
         root = QVBoxLayout(page)
 
         self.radio_3sigma = QRadioButton("Авто-порог по правилу 3-х сигм (по эталонным данным)", page)
-        self.radio_f1 = QRadioButton("F1-оптимальный порог (требуется валидационный датасет)", page)
+        self.radio_f1 = QRadioButton("F1-оптимальный порог (требуется валидационная выборка)", page)
         self.radio_3sigma.setChecked(True)
         self.radio_3sigma.setStyleSheet(
             """
@@ -171,21 +171,21 @@ class SettingsDialog(QDialog):
         self._f1_box.setVisible(False)
         form = QFormLayout(self._f1_box)
 
-        self._btn_choose_val = QPushButton("Выбрать папку Validation", self._f1_box)
+        self._btn_choose_val = QPushButton("Выбрать папку валидации", self._f1_box)
         self._btn_choose_val.clicked.connect(self._choose_validation_dir)
         self._val_path_label = QLabel("Не выбрано", self._f1_box)
         self._val_path_label.setWordWrap(True)
         val_row = QVBoxLayout()
         val_row.addWidget(self._btn_choose_val)
         val_row.addWidget(self._val_path_label)
-        form.addRow("Validation:", self._wrap_layout(val_row, self._f1_box))
+        form.addRow("Валидационная выборка:", self._wrap_layout(val_row, self._f1_box))
 
         self.gt_mask_container = QWidget(self._f1_box)
         gt_layout = QVBoxLayout(self.gt_mask_container)
         gt_layout.setContentsMargins(0, 0, 0, 0)
-        self._gt_mask_title = QLabel("GT Маски:", self.gt_mask_container)
+        self._gt_mask_title = QLabel("Эталонные маски:", self.gt_mask_container)
         self._btn_choose_mask = QPushButton(
-            "Выбрать папку GT Масок (опционально)", self.gt_mask_container
+            "Выбрать папку эталонных масок (опционально)", self.gt_mask_container
         )
         self._btn_choose_mask.clicked.connect(self._choose_gt_mask_dir)
         self._mask_path_label = QLabel("Не выбрано", self.gt_mask_container)
@@ -196,10 +196,10 @@ class SettingsDialog(QDialog):
         form.addRow(self.gt_mask_container)
 
         self._objective_combo = QComboBox(self._f1_box)
-        self._objective_combo.addItems(["Image-level F1", "Pixel-level F1"])
+        self._objective_combo.addItems(["F1 уровня изображения", "F1 уровня пикселей"])
         self._objective_combo.currentIndexChanged.connect(self._on_f1_target_changed)
         self._objective_combo.setVisible(False)  # временно скрыт
-        self._objective_label = QLabel("Image-level F1", self._f1_box)
+        self._objective_label = QLabel("F1 уровня изображения", self._f1_box)
         form.addRow("Цель оптимизации:", self._objective_label)
 
         root.addWidget(self._f1_box)
@@ -209,13 +209,13 @@ class SettingsDialog(QDialog):
     def _build_metrics_tab(self) -> QWidget:
         """
         Вкладка настройки вычисления метрик после формирования банка.
-        Image AUROC — всегда. Pixel AUROC и PRO — только с GT-масками.
+        AUROC уровня изображения — всегда. AUROC уровня пикселей и метрика PRO — только с эталонными масками.
         """
         page = QWidget(self)
         root = QVBoxLayout(page)
         root.setSpacing(8)
 
-        info = QLabel("Image AUROC (always). Pixel AUROC & PRO Score - with GT masks.", page)
+        info = QLabel("AUROC уровня изображения (всегда). AUROC уровня пикселей и метрика PRO — при наличии эталонных масок.", page)
         info.setWordWrap(True)
         info.setStyleSheet("color: #a0b0c0; font-size: 11px;")
         root.addWidget(info)
@@ -224,36 +224,36 @@ class SettingsDialog(QDialog):
         form.setSpacing(8)
 
         # Validation dir
-        self._btn_metrics_val = QPushButton("Выбрать папку Validation", page)
+        self._btn_metrics_val = QPushButton("Выбрать папку валидации", page)
         self._btn_metrics_val.clicked.connect(self._choose_metrics_val_dir)
         self._metrics_val_label = QLabel("Не выбрано", page)
         self._metrics_val_label.setWordWrap(True)
         val_col = QVBoxLayout()
         val_col.addWidget(self._btn_metrics_val)
         val_col.addWidget(self._metrics_val_label)
-        form.addRow("Validation:", self._wrap_layout(val_col, page))
+        form.addRow("Валидационная выборка:", self._wrap_layout(val_col, page))
 
         # GT masks dir (optional)
-        self._btn_metrics_mask = QPushButton("Выбрать папку GT Масок (опционально)", page)
+        self._btn_metrics_mask = QPushButton("Выбрать папку эталонных масок (опционально)", page)
         self._btn_metrics_mask.clicked.connect(self._choose_metrics_mask_dir)
         self._metrics_mask_label = QLabel("Не выбрано", page)
         self._metrics_mask_label.setWordWrap(True)
         mask_col = QVBoxLayout()
         mask_col.addWidget(self._btn_metrics_mask)
         mask_col.addWidget(self._metrics_mask_label)
-        form.addRow("GT Маски:", self._wrap_layout(mask_col, page))
+        form.addRow("Эталонные маски:", self._wrap_layout(mask_col, page))
 
         root.addLayout(form)
         root.addStretch()
         return page
 
     def _choose_metrics_val_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Выберите Validation папку для метрик")
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку валидации для метрик")
         if path:
             self._set_path_label(self._metrics_val_label, path)
 
     def _choose_metrics_mask_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку GT масок для метрик")
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку эталонных масок для метрик")
         if path:
             self._set_path_label(self._metrics_mask_label, path)
 
@@ -288,12 +288,12 @@ class SettingsDialog(QDialog):
         self._on_f1_target_changed()
 
     def _choose_validation_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Выберите Validation папку")
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку валидации")
         if path:
             self._set_path_label(self._val_path_label, path)
 
     def _choose_gt_mask_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Выберите папку GT масок")
+        path = QFileDialog.getExistingDirectory(self, "Выберите папку эталонных масок")
         if path:
             self._set_path_label(self._mask_path_label, path)
 
@@ -347,13 +347,13 @@ class SettingsDialog(QDialog):
 
         if threshold_mode == "f1_optimal":
             if validation_dir is None:
-                QMessageBox.warning(self, "Validation", "Для F1-порога выберите папку Validation.")
+                QMessageBox.warning(self, "Валидация", "Для F1-порога выберите папку валидации.")
                 return
             if not self._validate_f1_dirs(validation_dir):
                 QMessageBox.warning(
                     self,
-                    "Validation",
-                    "Папка Validation должна содержать подпапку 'good' и хотя бы одну папку с дефектами.",
+                    "Валидация",
+                    "Папка валидации должна содержать подпапку 'good' и хотя бы одну папку с дефектами.",
                 )
                 return
 
@@ -372,13 +372,13 @@ class SettingsDialog(QDialog):
             else self._metrics_mask_label.text() or None
         )
 
-        # Валидация папки метрик: структура должна совпадать с validation (good + дефекты)
+        # Валидация папки метрик: структура должна совпадать с валидационной (good + дефекты)
         if metrics_val is not None:
             if not self._validate_f1_dirs(metrics_val):
                 QMessageBox.warning(
                     self,
-                    "Оценка качества — Validation",
-                    "Папка Validation для метрик должна содержать подпапку 'good' "
+                    "Оценка качества — Валидация",
+                    "Папка валидации для метрик должна содержать подпапку 'good' "
                     "и хотя бы одну папку с дефектами.\n\n"
                     "Ожидаемая структура:\n"
                     "  <папка>/good/*.png\n"
@@ -386,13 +386,13 @@ class SettingsDialog(QDialog):
                 )
                 return
 
-        # Валидация папки GT-масок: должна существовать и быть директорией
+        # Валидация папки эталонных масок: должна существовать и быть директорией
         if metrics_mask is not None:
             if not Path(metrics_mask).is_dir():
                 QMessageBox.warning(
                     self,
-                    "Оценка качества — GT-маски",
-                    f"Папка GT-масок не найдена:\n{metrics_mask}\n\n"
+                    "Оценка качества — эталонные маски",
+                    f"Папка эталонных масок не найдена:\n{metrics_mask}\n\n"
                     "Убедитесь, что путь указан верно.",
                 )
                 return

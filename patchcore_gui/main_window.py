@@ -187,36 +187,36 @@ class BankInfoDialog(QDialog):
     def _build_rows(state: dict) -> list[tuple[str, str]]:
         rows: list[tuple[str, str]] = []
         rows.append(("── Архитектура ──", ""))
-        rows.append(("Backbone", str(state.get("backbone_name", "—"))))
+        rows.append(("Базовая сеть", str(state.get("backbone_name", "—"))))
         layers = state.get("layers", ())
-        rows.append(("Слои (layers)", ", ".join(layers) if layers else "—"))
-        rows.append(("Размер патча (patch_size)", str(state.get("patch_size", "—"))))
-        rows.append(("── Coreset и индекс ──", ""))
+        rows.append(("Слои признаков", ", ".join(layers) if layers else "—"))
+        rows.append(("Размер окрестности", str(state.get("patch_size", "—"))))
+        rows.append(("── Сжатие и индекс ──", ""))
         coreset_ratio = state.get("coreset_ratio", None)
-        rows.append(("Coreset ratio", f"{coreset_ratio * 100:.2f} %" if coreset_ratio is not None else "—"))
+        rows.append(("Коэффициент сжатия", f"{coreset_ratio * 100:.2f} %" if coreset_ratio is not None else "—"))
         memory_bank = state.get("memory_bank", None)
         if memory_bank is not None:
             rows.append(("Размер M_C (банк памяти)", str(tuple(memory_bank.shape))))
         else:
             rows.append(("Размер M_C (банк памяти)", "—"))
         spatial = state.get("spatial_size", None)
-        rows.append(("Карта признаков (spatial_size)", str(spatial) if spatial else "—"))
-        rows.append(("── Скоры и порог ──", ""))
-        rows.append(("score_min", f"{float(state['score_min']):.6f}" if "score_min" in state else "—"))
-        rows.append(("score_max", f"{float(state['score_max']):.6f}" if "score_max" in state else "—"))
-        rows.append(("threshold", f"{float(state['threshold']):.6f}" if "threshold" in state else "—"))
+        rows.append(("Размер карты признаков", str(spatial) if spatial else "—"))
+        rows.append(("── Оценки аномальности и порог ──", ""))
+        rows.append(("Минимальная оценка аномальности", f"{float(state['score_min']):.6f}" if "score_min" in state else "—"))
+        rows.append(("Максимальная оценка аномальности", f"{float(state['score_max']):.6f}" if "score_max" in state else "—"))
+        rows.append(("Порог", f"{float(state['threshold']):.6f}" if "threshold" in state else "—"))
         rows.append(("── Гиперпараметры ──", ""))
-        rows.append(("n_reweight_nn", str(state.get("n_reweight_nn", "—"))))
-        rows.append(("gaussian_sigma", str(state.get("gaussian_sigma", "—"))))
+        rows.append(("Соседи для взвешивания (b)", str(state.get("n_reweight_nn", "—"))))
+        rows.append(("Сигма гауссова сглаживания", str(state.get("gaussian_sigma", "—"))))
         m = state.get("metrics", {})
         if m:
             rows.append(("── Метрики качества ──", ""))
             if "image_auroc" in m:
-                rows.append(("Image AUROC", f"{float(m['image_auroc']):.4f}"))
+                rows.append(("AUROC уровня изображения", f"{float(m['image_auroc']):.4f}"))
             if "pixel_auroc" in m:
-                rows.append(("Pixel AUROC", f"{float(m['pixel_auroc']):.4f}"))
+                rows.append(("AUROC уровня пикселей", f"{float(m['pixel_auroc']):.4f}"))
             if "pro_score" in m:
-                rows.append(("PRO Score", f"{float(m['pro_score']):.4f}"))
+                rows.append(("Метрика PRO", f"{float(m['pro_score']):.4f}"))
         return rows
 
 
@@ -271,9 +271,9 @@ class BankFormationResultDialog(QDialog):
         table.setEditTriggers(table.EditTrigger.NoEditTriggers)
         table.setAlternatingRowColors(True)
         rows = [
-            ("Порог (threshold)", f"{threshold:.6f}"),
-            ("score_min", f"{score_min:.6f}"),
-            ("score_max", f"{score_max:.6f}"),
+            ("Порог", f"{threshold:.6f}"),
+            ("Минимальная оценка аномальности", f"{score_min:.6f}"),
+            ("Максимальная оценка аномальности", f"{score_max:.6f}"),
         ]
         for i, (k, v) in enumerate(rows):
             table.setItem(i, 0, QTableWidgetItem(k))
@@ -287,11 +287,11 @@ class BankFormationResultDialog(QDialog):
         lay = QVBoxLayout(page)
         rows = []
         if "image_auroc" in metrics:
-            rows.append(("Image AUROC", f"{float(metrics['image_auroc']):.4f}"))
+            rows.append(("AUROC уровня изображения", f"{float(metrics['image_auroc']):.4f}"))
         if "pixel_auroc" in metrics:
-            rows.append(("Pixel AUROC", f"{float(metrics['pixel_auroc']):.4f}"))
+            rows.append(("AUROC уровня пикселей", f"{float(metrics['pixel_auroc']):.4f}"))
         if "pro_score" in metrics:
-            rows.append(("PRO Score", f"{float(metrics['pro_score']):.4f}"))
+            rows.append(("Метрика PRO", f"{float(metrics['pro_score']):.4f}"))
         table = QTableWidget(len(rows), 2, page)
         table.setHorizontalHeaderLabels(["Метрика", "Значение"])
         table.horizontalHeader().setStretchLastSection(True)
@@ -317,13 +317,13 @@ class BankFormationResultDialog(QDialog):
         curves = []
         if "image_fpr" in metrics and "image_tpr" in metrics:
             auroc = metrics.get("image_auroc", 0.0)
-            curves.append(("Image ROC", metrics["image_fpr"], metrics["image_tpr"], f"AUC = {auroc:.4f}"))
+            curves.append(("ROC уровня изображения", metrics["image_fpr"], metrics["image_tpr"], f"AUC = {auroc:.4f}"))
         if "pixel_fpr" in metrics and "pixel_tpr" in metrics:
             auroc = metrics.get("pixel_auroc", 0.0)
-            curves.append(("Pixel ROC", metrics["pixel_fpr"], metrics["pixel_tpr"], f"AUC = {auroc:.4f}"))
+            curves.append(("ROC уровня пикселей", metrics["pixel_fpr"], metrics["pixel_tpr"], f"AUC = {auroc:.4f}"))
         if "pro_fpr" in metrics and "pro_tpr" in metrics:
             pro_score = metrics.get("pro_score", 0.0)
-            curves.append(("PRO Curve", metrics["pro_fpr"], metrics["pro_tpr"], f"PRO = {pro_score:.4f}"))
+            curves.append(("Кривая PRO", metrics["pro_fpr"], metrics["pro_tpr"], f"PRO = {pro_score:.4f}"))
         if not curves:
             return None
 
@@ -468,9 +468,18 @@ class MainWindow(QMainWindow):
 
     def _build_left_column(self) -> QTabWidget:
         self._left_tabs = QTabWidget()
-        self._left_tabs.addTab(self._build_inference_tab(), "Инференс")
-        self._left_tabs.addTab(self._build_training_tab(), "Формирование банка (Fit)")
+        self._left_tabs.addTab(self._build_inference_tab(), "Контроль качества")
+        self._left_tabs.addTab(self._build_training_tab(), "Формирование банка")
         self._left_tabs.tabBar().setVisible(False)
+        self._left_tabs.tabBar().setExpanding(False)
+        # Минимальная ширина = сумма ширин обеих вкладок + padding из CSS (14px × 2 = 28px) + запас
+        _fm = self._left_tabs.tabBar().fontMetrics()
+        _min_w = (
+            _fm.horizontalAdvance("Контроль качества") + 30
+            + _fm.horizontalAdvance("Формирование банка") + 30
+            + 14
+        )
+        self._left_tabs.setMinimumWidth(max(_min_w, 260))
         return self._left_tabs
 
     def _build_inference_tab(self) -> QFrame:
@@ -504,7 +513,7 @@ class MainWindow(QMainWindow):
         return frame
 
     def _build_training_tab(self) -> QFrame:
-        frame, lay = self._frame("Формирование эталонного банка памяти (Fit)")
+        frame, lay = self._frame("Формирование эталонного банка памяти")
         note = QLabel(
             "Используйте только изображения нормального класса (без дефектов). "
             "Алгоритм строит эталонный банк памяти исключительно из эталонов."
@@ -553,7 +562,7 @@ class MainWindow(QMainWindow):
         row = QHBoxLayout()
         row.addWidget(QLabel("Режим:"))
         self._mode_combo = QComboBox()
-        self._mode_combo.addItems(["Оригинал", "Тепловая карта", "Наложение (Overlay)"])
+        self._mode_combo.addItems(["Оригинал", "Тепловая карта", "Наложение"])
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         row.addWidget(self._mode_combo)
         row.addStretch()
@@ -570,7 +579,7 @@ class MainWindow(QMainWindow):
         self._verdict_label.setFont(vf)
         self._verdict_label.setMinimumHeight(100)
         lay.addWidget(self._verdict_label)
-        self._score_value = QLabel("Score: —")
+        self._score_value = QLabel("Оценка аномальности: —")
         self._time_value = QLabel("Время: — мс")
         lay.addWidget(self._score_value)
         lay.addWidget(self._time_value)
@@ -624,8 +633,11 @@ class MainWindow(QMainWindow):
         journal_layout = QVBoxLayout(journal_widget)
         journal_layout.setContentsMargins(0, 0, 0, 0)
         self._log_table = QTableWidget(0, 4)
-        self._log_table.setHorizontalHeaderLabels(["Время", "Имя файла", "Score", "Статус"])
+        self._log_table.setHorizontalHeaderLabels(["Время", "Имя файла", "Оценка аномальности", "Статус"])
         self._log_table.horizontalHeader().setStretchLastSection(True)
+        # Ширина колонки «Оценка аномальности» по ширине заголовка
+        _hfm = self._log_table.horizontalHeader().fontMetrics()
+        self._log_table.setColumnWidth(2, _hfm.horizontalAdvance("Оценка аномальности") + 24)
         self._log_table.setAlternatingRowColors(True)
         self._log_table.setEditTriggers(self._log_table.EditTrigger.NoEditTriggers)
         self._log_table.setSelectionBehavior(self._log_table.SelectionBehavior.SelectRows)
@@ -763,7 +775,7 @@ class MainWindow(QMainWindow):
             self._last_elapsed_ms = 0.0
             self._last_rgb = None
             self._last_map = None
-            self._score_value.setText("Score: —")
+            self._score_value.setText("Оценка аномальности: —")
             self._time_value.setText("Время: — мс")
             self._update_gallery_label()
             self._update_gallery_buttons_state()
@@ -776,7 +788,7 @@ class MainWindow(QMainWindow):
         self._last_elapsed_ms = e.elapsed_ms
         self._last_rgb = e.rgb
         self._last_map = e.anomaly_map
-        self._score_value.setText(f"Score: {e.raw_score:.4f}")
+        self._score_value.setText(f"Оценка аномальности: {e.raw_score:.4f}")
         self._time_value.setText(f"Время: {e.elapsed_ms:.0f} мс")
         self._update_gallery_label()
         self._update_gallery_buttons_state()
@@ -915,8 +927,8 @@ class MainWindow(QMainWindow):
             return
         if (self._training_settings.threshold_mode == "f1_optimal"
                 and not self._training_settings.validation_dir):
-            QMessageBox.warning(self, "Validation",
-                                "Для F1-оптимального порога сначала укажите папку Validation в настройках формирования банка.")
+            QMessageBox.warning(self, "Валидация",
+                                "Для F1-оптимального порога сначала укажите папку валидации в настройках формирования банка.")
             return
         train_files = list_image_paths(self._train_image_dir, recursive=True)
         if not train_files:
@@ -1364,7 +1376,7 @@ class MainWindow(QMainWindow):
         if not self._history:
             QMessageBox.warning(self, "Пусто", "Нет данных для экспорта. Сначала запустите конвейер.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить отчет", "PatchCore_Report.xlsx", "Excel Files (*.xlsx)")
+        path, _ = QFileDialog.getSaveFileName(self, "Сохранить отчет", "PatchCore_Report.xlsx", "Файлы Excel (*.xlsx)")
         if not path:
             return
         if not path.lower().endswith(".xlsx"):
@@ -1387,7 +1399,7 @@ class MainWindow(QMainWindow):
             metrics_data = {"Показатель": [], "Значение": []}
             if self._model_state and "metrics" in self._model_state:
                 m = self._model_state["metrics"]
-                for key, label in [("image_auroc", "Image AUROC"), ("pixel_auroc", "Pixel AUROC"), ("pro_score", "PRO Score")]:
+                for key, label in [("image_auroc", "AUROC уровня изображения"), ("pixel_auroc", "AUROC уровня пикселей"), ("pro_score", "Метрика PRO")]:
                     if key in m:
                         metrics_data["Показатель"].append(label)
                         metrics_data["Значение"].append(round(float(m[key]), 4))
@@ -1397,10 +1409,10 @@ class MainWindow(QMainWindow):
             df_metrics = pd.DataFrame(metrics_data)
 
             thr = self._current_threshold_raw()
-            results_data = {"Имя файла": [], "Score (сырой)": [], "Вердикт": [], "Время (мс)": [], "Полный путь": []}
+            results_data = {"Имя файла": [], "Оценка аномальности (сырая)": [], "Вердикт": [], "Время (мс)": [], "Полный путь": []}
             for entry in self._history:
                 results_data["Имя файла"].append(Path(entry.path).name)
-                results_data["Score (сырой)"].append(round(entry.raw_score, 6))
+                results_data["Оценка аномальности (сырая)"].append(round(entry.raw_score, 6))
                 results_data["Вердикт"].append("БРАК" if entry.raw_score >= thr else "НОРМА")
                 results_data["Время (мс)"].append(round(entry.elapsed_ms, 2))
                 results_data["Полный путь"].append(entry.path)
