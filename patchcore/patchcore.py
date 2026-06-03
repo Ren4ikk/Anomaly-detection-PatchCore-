@@ -38,6 +38,9 @@ _DEFAULT_BACKBONE: str = "wide_resnet50_2"
 _DEFAULT_LAYERS: tuple[str, ...] = ("layer2", "layer3")
 _DEFAULT_PATCH_SIZE: int = 3
 
+# Допустимая доля ложных браковок alpha по умолчанию (порог = квантиль 1 - alpha).
+_DEFAULT_FALSE_POSITIVE_RATE: float = 0.01
+
 # Размер выходной карты аномальности (соответствует входному изображению).
 _OUTPUT_SIZE: int = 224
 
@@ -88,6 +91,9 @@ class PatchCore:
         use_gpu_faiss:    Использовать GPU для FAISS-поиска.
         n_reweight_nn:    Число соседей b для re-weighting.
         gaussian_sigma:   σ для гауссова сглаживания карты аномальности.
+        false_positive_rate: Допустимая доля ложных браковок alpha. Порог
+                          вычисляется как квантиль уровня (1 - alpha) оценок
+                          аномальности эталонов (см. compute_score_range).
     """
 
     def __init__(
@@ -99,6 +105,7 @@ class PatchCore:
         use_gpu_faiss: bool = False,
         n_reweight_nn: int = _REWEIGHTING_NEIGHBOURS,
         gaussian_sigma: float = _GAUSSIAN_SIGMA,
+        false_positive_rate: float = _DEFAULT_FALSE_POSITIVE_RATE,
         backbone_name: str = _DEFAULT_BACKBONE,
         layers: tuple[str, ...] = _DEFAULT_LAYERS,
         patch_size: int = _DEFAULT_PATCH_SIZE,
@@ -111,6 +118,7 @@ class PatchCore:
         self.backbone_name = backbone_name
         self.layers = tuple(layers)
         self.patch_size = patch_size
+        self.false_positive_rate = false_positive_rate
 
         # Компоненты пайплайна
         self.feature_extractor = FeatureExtractor(
@@ -220,9 +228,11 @@ class PatchCore:
 
           score_max  — верхняя граница шкалы визуализации.
 
-          threshold  — порог для вынесения вердикта НОРМА/АНОМАЛИЯ.
-                       Правило 3σ: покрывает 99.7% нормального распределения,
-                       всё что выше — статистически аномально.
+          threshold  — порог для вынесения вердикта НОРМА/БРАК.
+                       Эмпирический квантиль уровня (1 - alpha) распределения
+                       оценок эталонов: доля эталонов с оценкой выше порога
+                       равна alpha (ожидаемая доля ложных браковок). Метод
+                       распределение-независимый.
 
           score_min  — минимальный max-пиксель карты по эталонным изображениям.
 
@@ -263,16 +273,20 @@ class PatchCore:
         self.score_min = float(np.min(map_maxes_arr))
         self.score_max = float(np.max(map_maxes_arr))
 
-        # -- threshold (для вердикта НОРМА/АНОМАЛИЯ) --------------------------
-        std_score = float(np.std(scores_arr))
-        p99 = float(np.percentile(scores_arr, 99))
-
-        # Порог = граница 99% нормы + 3 сигмы для защиты от ложных срабатываний
-        self.threshold = p99 + 3 * std_score
+        # -- threshold (вердикт НОРМА/БРАК) -----------------------------------
+        # Порог = эмпирический квантиль уровня (1 - alpha) распределения оценок
+        # аномальности эталонных изображений. По определению квантиля доля
+        # эталонов с оценкой выше порога равна alpha — это и есть ожидаемая
+        # доля ложных браковок на нормальном классе. Метод распределение-
+        # независимый: не опирается на предположение о форме распределения.
+        alpha = self.false_positive_rate
+        quantile_level = 1.0 - alpha
+        self.threshold = float(np.quantile(scores_arr, quantile_level))
 
         print(f"[PatchCore] Диапазон карты : [{self.score_min:.4f}, {self.score_max:.4f}]")
         print(f"[PatchCore] Порог          : {self.threshold:.4f}  "
-              f"(p99={p99:.4f}, std={std_score:.4f}, max_train={np.max(scores_arr):.4f})")
+              f"(квантиль {quantile_level:.3f}, alpha={alpha:.3f}, "
+              f"max_train={float(np.max(scores_arr)):.4f})")
 
     def predict(self, images: torch.Tensor) -> list[PredictionResult]:
         """
@@ -506,6 +520,7 @@ class PatchCore:
             "score_min": self.score_min,
             "score_max": self.score_max,
             "threshold": self.threshold,
+            "false_positive_rate": self.false_positive_rate,
             "backbone_name": self.backbone_name,
             "layers": self.layers,
             "patch_size": self.patch_size,
@@ -547,6 +562,9 @@ class PatchCore:
         self.score_min      = float(state.get("score_min", 0.0))
         self.score_max      = float(state.get("score_max", 1.0))
         self.threshold      = float(state.get("threshold", 0.5))
+        self.false_positive_rate = float(
+            state.get("false_positive_rate", self.false_positive_rate)
+        )
         self.backbone_name  = str(state.get("backbone_name", self.backbone_name))
         self.layers         = tuple(state.get("layers", self.layers))
         self.patch_size     = int(state.get("patch_size", self.patch_size))

@@ -36,7 +36,8 @@ class TrainingSettings:
     patch_size: int = 3
     device: str = "auto"
     use_gpu_faiss: bool = False
-    threshold_mode: str = "three_sigma"
+    threshold_mode: str = "percentile"
+    false_positive_rate: float = 0.01
     validation_dir: str | None = None
     gt_mask_dir: str | None = None
     threshold_objective: str = "image_f1"
@@ -148,24 +149,42 @@ class SettingsDialog(QDialog):
         page = QWidget(self)
         root = QVBoxLayout(page)
 
-        self.radio_3sigma = QRadioButton("Авто-порог по правилу 3-х сигм (по эталонным данным)", page)
+        self.radio_percentile = QRadioButton(
+            "Авто-порог по эмпирическому квантилю (по эталонным данным)", page
+        )
         self.radio_f1 = QRadioButton("F1-оптимальный порог (требуется валидационная выборка)", page)
-        self.radio_3sigma.setChecked(True)
-        self.radio_3sigma.setStyleSheet(
+        self.radio_percentile.setChecked(True)
+        self.radio_percentile.setStyleSheet(
             """
             QRadioButton { spacing: 8px; color: #e4e4e4; }
             QRadioButton::indicator { width: 14px; height: 14px; border-radius: 7px; border: 1px solid #707070; background: #2f2f33; }
             QRadioButton::indicator:checked { background: #6ba3d6; border: 1px solid #8fc3f0; }
             """
         )
-        self.radio_f1.setStyleSheet(self.radio_3sigma.styleSheet())
+        self.radio_f1.setStyleSheet(self.radio_percentile.styleSheet())
         group = QButtonGroup(page)
-        group.addButton(self.radio_3sigma)
+        group.addButton(self.radio_percentile)
         group.addButton(self.radio_f1)
-        self.radio_3sigma.toggled.connect(self._on_threshold_type_changed)
+        self.radio_percentile.toggled.connect(self._on_threshold_type_changed)
         self.radio_f1.toggled.connect(self._on_threshold_type_changed)
-        root.addWidget(self.radio_3sigma)
+        root.addWidget(self.radio_percentile)
         root.addWidget(self.radio_f1)
+
+        # Допустимая доля ложных браковок (alpha) для квантильного порога.
+        # Порог = квантиль уровня (1 - alpha) распределения оценок эталонов.
+        fpr_form = QFormLayout()
+        self._fpr_spin = QDoubleSpinBox(page)
+        self._fpr_spin.setRange(0.1, 20.0)
+        self._fpr_spin.setDecimals(2)
+        self._fpr_spin.setSuffix(" %")
+        self._fpr_spin.setSingleStep(0.5)
+        self._fpr_spin.setToolTip(
+            "Допустимая доля ложных браковок на нормальных изделиях (α).\n"
+            "Порог = квантиль уровня (1 − α) оценок аномальности эталонов.\n"
+            "Применяется к авто-порогу по эмпирическому квантилю."
+        )
+        fpr_form.addRow("Допустимая доля ложных браковок (α):", self._fpr_spin)
+        root.addLayout(fpr_form)
 
         self._f1_box = QGroupBox("Параметры F1-оптимизации", page)
         self._f1_box.setVisible(False)
@@ -274,11 +293,12 @@ class SettingsDialog(QDialog):
         self._patch_spin.setValue(s.patch_size if s.patch_size % 2 == 1 else s.patch_size + 1)
         self._device_combo.setCurrentText(s.device if s.device in {"auto", "cpu", "cuda"} else "auto")
         self._faiss_gpu_check.setChecked(s.use_gpu_faiss)
+        self._fpr_spin.setValue(s.false_positive_rate * 100.0)
         self._on_device_changed()
 
         is_f1 = s.threshold_mode == "f1_optimal"
         self.radio_f1.setChecked(is_f1)
-        self.radio_3sigma.setChecked(not is_f1)
+        self.radio_percentile.setChecked(not is_f1)
         self._set_path_label(self._val_path_label, s.validation_dir or "")
         self._set_path_label(self._mask_path_label, s.gt_mask_dir or "")
         self._set_path_label(self._metrics_val_label, s.metrics_val_dir or "")
@@ -340,7 +360,7 @@ class SettingsDialog(QDialog):
         gt_mask_dir_text = (
             "" if self._mask_path_label.text() == "Не выбрано" else self._mask_path_label.text()
         )
-        threshold_mode = "f1_optimal" if self.radio_f1.isChecked() else "three_sigma"
+        threshold_mode = "f1_optimal" if self.radio_f1.isChecked() else "percentile"
         objective = "image_f1" if self._objective_combo.currentIndex() == 0 else "pixel_f1"
         validation_dir: str | None = validation_dir_text or None
         gt_mask_dir: str | None = gt_mask_dir_text or None
@@ -403,6 +423,7 @@ class SettingsDialog(QDialog):
             coreset_ratio=float(self._coreset_spin.value()) / 100.0,
             n_reweight_nn=int(self._neighbors_spin.value()),
             gaussian_sigma=float(self._sigma_spin.value()),
+            false_positive_rate=float(self._fpr_spin.value()) / 100.0,
             patch_size=int(self._patch_spin.value()),
             device=self._device_combo.currentText(),
             use_gpu_faiss=self._faiss_gpu_check.isChecked(),

@@ -245,6 +245,7 @@ class TrainingWorker(QThread):
                 coreset_ratio=self._settings.coreset_ratio,
                 n_reweight_nn=self._settings.n_reweight_nn,
                 gaussian_sigma=self._settings.gaussian_sigma,
+                false_positive_rate=self._settings.false_positive_rate,
                 backbone_name=self._settings.backbone_name,
                 layers=self._settings.layers,
                 patch_size=self._settings.patch_size,
