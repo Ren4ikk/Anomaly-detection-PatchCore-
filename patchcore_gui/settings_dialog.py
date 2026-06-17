@@ -172,8 +172,11 @@ class SettingsDialog(QDialog):
 
         # Допустимая доля ложных браковок (alpha) для квантильного порога.
         # Порог = квантиль уровня (1 - alpha) распределения оценок эталонов.
-        fpr_form = QFormLayout()
-        self._fpr_spin = QDoubleSpinBox(page)
+        # Обёрнуто в контейнер-виджет, чтобы скрывать целиком при выборе F1-порога.
+        self._fpr_container = QWidget(page)
+        fpr_form = QFormLayout(self._fpr_container)
+        fpr_form.setContentsMargins(0, 0, 0, 0)
+        self._fpr_spin = QDoubleSpinBox(self._fpr_container)
         self._fpr_spin.setRange(0.1, 20.0)
         self._fpr_spin.setDecimals(2)
         self._fpr_spin.setSuffix(" %")
@@ -184,7 +187,7 @@ class SettingsDialog(QDialog):
             "Применяется к авто-порогу по эмпирическому квантилю."
         )
         fpr_form.addRow("Допустимая доля ложных браковок (α):", self._fpr_spin)
-        root.addLayout(fpr_form)
+        root.addWidget(self._fpr_container)
 
         self._f1_box = QGroupBox("Параметры F1-оптимизации", page)
         self._f1_box.setVisible(False)
@@ -329,7 +332,9 @@ class SettingsDialog(QDialog):
             self._faiss_gpu_check.setChecked(False)
 
     def _on_threshold_type_changed(self) -> None:
-        self._f1_box.setVisible(self.radio_f1.isChecked())
+        is_f1 = self.radio_f1.isChecked()
+        self._f1_box.setVisible(is_f1)
+        self._fpr_container.setVisible(not is_f1)
 
     def _on_f1_target_changed(self) -> None:
         is_pixel_f1 = self._objective_combo.currentIndex() == 1

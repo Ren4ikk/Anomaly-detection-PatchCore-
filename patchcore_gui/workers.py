@@ -51,6 +51,7 @@ class MetaLoadWorker(QThread):
         self._model_path = model_path
 
     def run(self) -> None:
+        t0 = time.perf_counter()
         try:
             state = torch.load(self._model_path, map_location="cpu", weights_only=True)
             if not isinstance(state, dict):
@@ -61,6 +62,8 @@ class MetaLoadWorker(QThread):
             self.meta_ready.emit(score_min, score_max, threshold, state)
         except Exception as exc:  # noqa: BLE001
             self.meta_failed.emit(str(exc))
+        print(f"load: {(time.perf_counter() - t0) * 1000:.1f} мс")
+
 
 
 class ModelLoadWorker(QThread):

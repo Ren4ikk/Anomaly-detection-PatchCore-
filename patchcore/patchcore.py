@@ -212,7 +212,10 @@ class PatchCore:
 
         # Этап 4: строим FAISS-индекс
         print("[PatchCore] Построение FAISS-индекса...")
+        import time
+        t0 = time.perf_counter()
         self.nn_index.fit(coreset)
+        print(f"FAISS fit: {(time.perf_counter() - t0) * 1000:.1f} мс")
         print("[PatchCore] Формирование банка завершено.")
 
     def compute_score_range(
